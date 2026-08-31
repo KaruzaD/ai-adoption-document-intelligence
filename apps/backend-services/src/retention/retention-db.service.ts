@@ -1,6 +1,8 @@
 import { DocumentStatus, Prisma, ReviewStatus } from "@generated/client";
-import { Injectable, LoggerService } from "@nestjs/common";
+import { Injectable } from "@nestjs/common";
 import { PrismaService } from "@/database/prisma.service";
+import { AppLoggerService } from "@/logging/app-logger.service";
+
 
 // TODO: add ReviewStatus.rejected once it exists in the schema.
 /**
@@ -31,7 +33,7 @@ const TERMINAL_DOCUMENT_STATUSES: DocumentStatus[] = [
 export class RetentionDbService {
   constructor(
     private readonly prismaService: PrismaService,
-    private readonly logger: LoggerService,
+    private readonly logger: AppLoggerService,
   ) {}
 
   async runWithDatabaseLock(
