@@ -3,7 +3,6 @@ import { Injectable } from "@nestjs/common";
 import { PrismaService } from "@/database/prisma.service";
 import { AppLoggerService } from "@/logging/app-logger.service";
 
-
 // TODO: add ReviewStatus.rejected once it exists in the schema.
 /**
  * Review statuses whose sessions are eligible for age-based deletion.
