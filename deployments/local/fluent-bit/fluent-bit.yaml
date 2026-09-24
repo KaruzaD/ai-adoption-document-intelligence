@@ -88,11 +88,15 @@ pipeline:
       call: passthrough
 
   outputs:
+    # auth_url points at the local token broker (scripts/azure-token-broker.js), which
+    # serves the developer's own Entra token so no app registration is needed. The
+    # plugin only permits plain HTTP here because the address is loopback, which in
+    # turn requires the container to run with host networking.
     - name: azure_logs_ingestion
       match: app.*
-      tenant_id: ${AZURE_LOGS_TENANT_ID}
-      client_id: ${AZURE_LOGS_CLIENT_ID}
-      client_secret: ${AZURE_LOGS_CLIENT_SECRET}
+      auth_url: ${AZURE_LOGS_AUTH_URL}
+      client_id: unused-with-auth-url
+      client_secret: unused-with-auth-url
       dce_url: ${AZURE_LOGS_DCE_URL}
       dcr_id: ${AZURE_LOGS_DCR_ID}
       table_name: ${AZURE_LOGS_TABLE_NAME}

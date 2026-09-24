@@ -46,18 +46,56 @@ Create these once, in the subscription holding your workspace.
 
    Record the DCR's **immutable ID** (`dcr-…`) from its JSON view.
 
-4. **App registration** with a client secret, granted the **Monitoring Metrics Publisher** role *on the DCR*. A workspace-scoped grant is not sufficient and yields 403 on ingest.
+4. **Ingestion permission.** This setup authenticates as *you* via a local token broker, so grant your own user **Monitoring Metrics Publisher** on the DCR. A workspace-scoped grant is not sufficient and yields 403 on ingest.
+
+   ```bash
+   DCR_RES_ID=$(az monitor data-collection rule show -g "$RG" -n docintel-local-dcr --query id -o tsv)
+   az role assignment create \
+     --assignee-object-id "$(az ad signed-in-user show --query id -o tsv)" \
+     --assignee-principal-type User \
+     --role "Monitoring Metrics Publisher" --scope "$DCR_RES_ID"
+   ```
 
 Full walkthrough: [Tutorial: Send data to Azure Monitor Logs with Logs ingestion API](https://learn.microsoft.com/en-us/azure/azure-monitor/logs/tutorial-logs-ingestion-portal).
 
-## Configuration
+## Authentication: local token broker
 
-Add to the repo-root `.env` (gitignored — never commit these):
+The Logs Ingestion API requires an Entra token. Rather than an app registration and a long-lived client secret, [`scripts/azure-token-broker.js`](../../scripts/azure-token-broker.js) serves the developer's own token from their `az login` session at a loopback OAuth2 endpoint, and Fluent Bit's `auth_url` points at it.
 
 ```bash
-AZURE_LOGS_TENANT_ID=<tenant guid>
-AZURE_LOGS_CLIENT_ID=<app registration client id>
-AZURE_LOGS_CLIENT_SECRET=<app registration client secret>
+npm run token-broker
+```
+
+It starts automatically with the **Dev: all + monitoring** VS Code task. `Dev: all` does not start it.
+
+Three constraints make this work, and breaking any one of them breaks ingestion:
+
+- **Fluent Bit 5.1 or newer.** `auth_url` does not exist before then; 4.x and 5.0 reject it as an unknown property and the output fails to initialise. The image is pinned to `5.1.2` for this reason.
+- **Host networking on the container.** The plugin only permits plain HTTP for `auth_url` when the address is loopback, so `127.0.0.1` must mean the host. `host.docker.internal` is not a loopback address and would require HTTPS.
+- **An active `az login` session.** The broker shells out to `az account get-access-token`; it reads no credential files itself and binds to `127.0.0.1` only, so the token never leaves the host.
+
+### Limitations
+
+Conditional access will eventually force interactive re-authentication, after which the broker returns 500 and delivery stops until you run `az login` again. Fluent Bit buffers and retries meanwhile, so short gaps lose nothing. **This is a local development mechanism — it is not suitable for unattended or shared deployments.**
+
+### Alternative: app registration
+
+For unattended use, register an app, grant it **Monitoring Metrics Publisher** on the DCR, and replace `auth_url` with credentials:
+
+```yaml
+      tenant_id: ${AZURE_LOGS_TENANT_ID}
+      client_id: ${AZURE_LOGS_CLIENT_ID}
+      client_secret: ${AZURE_LOGS_CLIENT_SECRET}
+```
+
+Drop `network_mode: host` from the compose service at the same time; it is only needed for the broker.
+
+## Configuration
+
+Add to the repo-root `.env` (gitignored). With the token broker there is no secret to store:
+
+```bash
+AZURE_LOGS_AUTH_URL=http://127.0.0.1:8899/token
 AZURE_LOGS_DCE_URL=https://<dce-name>.<region>.ingest.monitor.azure.com
 AZURE_LOGS_DCR_ID=dcr-<immutable id>
 AZURE_LOGS_TABLE_NAME=DocIntelLocal_CL
@@ -66,6 +104,7 @@ AZURE_LOGS_TABLE_NAME=DocIntelLocal_CL
 Start it with the rest of the monitoring stack:
 
 ```bash
+npm run token-broker &
 docker compose --profile monitoring up -d
 docker compose logs -f fluent-bit
 ```
@@ -139,11 +178,13 @@ curl -s -o /dev/null -w "%{http_code}\n" http://localhost:3002/api/does-not-exis
 
 | Symptom | Cause |
 | --- | --- |
-| `Failed to get access token` | Wrong tenant/client/secret, or the secret expired |
+| `unknown configuration property 'auth_url'` | Fluent Bit older than 5.1 |
+| `oauth2` / connection refused to `127.0.0.1:8899` | Broker not running (`npm run token-broker`), or the container lacks `network_mode: host` |
+| Broker returns 500 | `az login` session expired — re-authenticate |
 | HTTP 403 | Missing **Monitoring Metrics Publisher** on the DCR — a workspace-scoped grant is not enough |
 | HTTP 404 | Wrong DCR immutable ID, or the stream is not named `Custom-<table>` |
 | HTTP 400 on every record | Stream declaration does not match the fields Fluent Bit sends |
-| HTTP 200 but no rows | Not possible on this API — but it is the normal behaviour of the retired Data Collector API, so check which output plugin is configured |
+| `http_status=204` but no rows | Usually just first-write latency; measured at ~7 minutes on a new table. Re-query before assuming failure |
 | No rows, no errors | Everything was filtered out — confirm with `docker compose logs fluent-bit`, or temporarily swap the output for `name: stdout` with `format: json_lines` |
 
 Tail positions persist in the `fluent_bit_data` volume, so a container restart does not re-send history. Remove it with `docker compose --profile monitoring down -v` to force a full re-read.

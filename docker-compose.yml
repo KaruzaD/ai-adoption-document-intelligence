@@ -278,15 +278,16 @@ services:
     profiles: [monitoring]
 
   # Mirrors the same log files to Azure Log Analytics; independent of the Loki pipeline.
+  # Host networking is required so the plugin can reach the loopback token broker.
+  # 5.1+ is required: auth_url does not exist in earlier releases.
   fluent-bit:
-    image: fluent/fluent-bit:4.0.3
+    image: fluent/fluent-bit:5.1.2
     container_name: fluent-bit
     restart: unless-stopped
+    network_mode: host
     command: --config=/fluent-bit/etc/fluent-bit.yaml
     environment:
-      AZURE_LOGS_TENANT_ID: ${AZURE_LOGS_TENANT_ID}
-      AZURE_LOGS_CLIENT_ID: ${AZURE_LOGS_CLIENT_ID}
-      AZURE_LOGS_CLIENT_SECRET: ${AZURE_LOGS_CLIENT_SECRET}
+      AZURE_LOGS_AUTH_URL: ${AZURE_LOGS_AUTH_URL:-http://127.0.0.1:8899/token}
       AZURE_LOGS_DCE_URL: ${AZURE_LOGS_DCE_URL}
       AZURE_LOGS_DCR_ID: ${AZURE_LOGS_DCR_ID}
       AZURE_LOGS_TABLE_NAME: ${AZURE_LOGS_TABLE_NAME:-DocIntelLocal_CL}

@@ -170,11 +170,38 @@
       }
     },
     {
+      "label": "token-broker: dev",
+      "type": "shell",
+      "command": "npm",
+      "args": [
+        "run",
+        "token-broker"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "isBackground": true,
+      "problemMatcher": [],
+      "presentation": {
+        "panel": "new",
+        "reveal": "always"
+      }
+    },
+    {
+      "label": "Dev: runtime + token broker",
+      "dependsOn": [
+        "Dev: runtime",
+        "token-broker: dev"
+      ],
+      "dependsOrder": "parallel",
+      "problemMatcher": []
+    },
+    {
       "label": "Dev: all + monitoring",
       "dependsOn": [
         "Dev: prerequisites",
         "monitoring: docker up",
-        "Dev: runtime"
+        "Dev: runtime + token broker"
       ],
       "dependsOrder": "sequence",
       "problemMatcher": []
