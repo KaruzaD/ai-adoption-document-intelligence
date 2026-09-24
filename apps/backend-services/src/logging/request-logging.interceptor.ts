@@ -15,13 +15,14 @@ declare global {
   namespace Express {
     interface Request {
       _loggingStartTime?: number;
+      _loggingCompleted?: boolean;
     }
   }
 }
 
 @Injectable()
 export class RequestLoggingInterceptor implements NestInterceptor {
-  constructor(private readonly logger: AppLoggerService) {}
+  constructor(private readonly logger: AppLoggerService) { }
 
   intercept(context: ExecutionContext, next: CallHandler) {
     const request = context.switchToHttp().getRequest<Request>();
@@ -61,6 +62,7 @@ export class RequestLoggingInterceptor implements NestInterceptor {
     const durationMs = start != null ? Date.now() - start : undefined;
     const requestId = request.headers["x-request-id"] as string | undefined;
     const statusCode = request.res.statusCode;
+    request._loggingCompleted = true;
     this.logger.log("Request completed", {
       requestId,
       method: request.method,
