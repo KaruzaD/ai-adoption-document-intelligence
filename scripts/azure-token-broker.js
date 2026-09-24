@@ -18,7 +18,7 @@ const { execFile } = require("node:child_process");
 const HOST = "127.0.0.1";
 const PORT = Number(process.env.AZURE_TOKEN_BROKER_PORT || 8899);
 const RESOURCE =
-	process.env.AZURE_TOKEN_BROKER_RESOURCE || "https://monitor.azure.com";
+  process.env.AZURE_TOKEN_BROKER_RESOURCE || "https://monitor.azure.com";
 
 // Re-mint this long before expiry so Fluent Bit never presents a stale token.
 const REFRESH_MARGIN_SECONDS = 300;
@@ -27,7 +27,7 @@ const FALLBACK_LIFETIME_SECONDS = 3600;
 let cached = null;
 
 function nowSeconds() {
-	return Math.floor(Date.now() / 1000);
+  return Math.floor(Date.now() / 1000);
 }
 
 /**
@@ -38,15 +38,15 @@ function nowSeconds() {
  * @returns {number} Expiry as epoch seconds.
  */
 function readExpiry(parsed) {
-	const epoch = Number(parsed.expires_on);
-	if (Number.isFinite(epoch) && epoch > 0) {
-		return epoch;
-	}
-	const parsedDate = Date.parse(String(parsed.expiresOn));
-	if (Number.isFinite(parsedDate)) {
-		return Math.floor(parsedDate / 1000);
-	}
-	return nowSeconds() + FALLBACK_LIFETIME_SECONDS;
+  const epoch = Number(parsed.expires_on);
+  if (Number.isFinite(epoch) && epoch > 0) {
+    return epoch;
+  }
+  const parsedDate = Date.parse(String(parsed.expiresOn));
+  if (Number.isFinite(parsedDate)) {
+    return Math.floor(parsedDate / 1000);
+  }
+  return nowSeconds() + FALLBACK_LIFETIME_SECONDS;
 }
 
 /**
@@ -55,41 +55,41 @@ function readExpiry(parsed) {
  * @returns {Promise<{token: string, expiresAtSeconds: number}>} The token and its expiry.
  */
 function fetchToken() {
-	return new Promise((resolve, reject) => {
-		execFile(
-			"az",
-			[
-				"account",
-				"get-access-token",
-				"--resource",
-				RESOURCE,
-				"--output",
-				"json",
-			],
-			{ maxBuffer: 10 * 1024 * 1024 },
-			(error, stdout, stderr) => {
-				if (error) {
-					reject(new Error(String(stderr).trim() || error.message));
-					return;
-				}
-				let parsed;
-				try {
-					parsed = JSON.parse(stdout);
-				} catch (_error) {
-					reject(new Error("could not parse Azure CLI output"));
-					return;
-				}
-				if (!parsed.accessToken) {
-					reject(new Error("Azure CLI returned no accessToken"));
-					return;
-				}
-				resolve({
-					token: parsed.accessToken,
-					expiresAtSeconds: readExpiry(parsed),
-				});
-			},
-		);
-	});
+  return new Promise((resolve, reject) => {
+    execFile(
+      "az",
+      [
+        "account",
+        "get-access-token",
+        "--resource",
+        RESOURCE,
+        "--output",
+        "json",
+      ],
+      { maxBuffer: 10 * 1024 * 1024 },
+      (error, stdout, stderr) => {
+        if (error) {
+          reject(new Error(String(stderr).trim() || error.message));
+          return;
+        }
+        let parsed;
+        try {
+          parsed = JSON.parse(stdout);
+        } catch (_error) {
+          reject(new Error("could not parse Azure CLI output"));
+          return;
+        }
+        if (!parsed.accessToken) {
+          reject(new Error("Azure CLI returned no accessToken"));
+          return;
+        }
+        resolve({
+          token: parsed.accessToken,
+          expiresAtSeconds: readExpiry(parsed),
+        });
+      },
+    );
+  });
 }
 
 /**
@@ -98,53 +98,53 @@ function fetchToken() {
  * @returns {Promise<{token: string, expiresAtSeconds: number}>} The token and its expiry.
  */
 async function getToken() {
-	if (
-		cached &&
-		cached.expiresAtSeconds - nowSeconds() > REFRESH_MARGIN_SECONDS
-	) {
-		return cached;
-	}
-	cached = await fetchToken();
-	return cached;
+  if (
+    cached &&
+    cached.expiresAtSeconds - nowSeconds() > REFRESH_MARGIN_SECONDS
+  ) {
+    return cached;
+  }
+  cached = await fetchToken();
+  return cached;
 }
 
 const server = http.createServer((req, res) => {
-	// Fluent Bit POSTs client_credentials form data; it carries nothing we need.
-	req.resume();
-	req.on("end", () => {
-		getToken()
-			.then((entry) => {
-				const expiresIn = Math.max(entry.expiresAtSeconds - nowSeconds(), 60);
-				const body = JSON.stringify({
-					token_type: "Bearer",
-					access_token: entry.token,
-					expires_in: expiresIn,
-					ext_expires_in: expiresIn,
-				});
-				res.writeHead(200, {
-					"content-type": "application/json",
-					"content-length": Buffer.byteLength(body),
-				});
-				res.end(body);
-				console.log(`[token-broker] issued token, expires in ${expiresIn}s`);
-			})
-			.catch((error) => {
-				const body = JSON.stringify({
-					error: "invalid_grant",
-					error_description: "unable to acquire a token from the Azure CLI session",
-				});
-				res.writeHead(500, {
-					"content-type": "application/json",
-					"content-length": Buffer.byteLength(body),
-				});
-				res.end(body);
-				console.error(`[token-broker] ${error.message}`);
-			});
-	});
+  // Fluent Bit POSTs client_credentials form data; it carries nothing we need.
+  req.resume();
+  req.on("end", () => {
+    getToken()
+      .then((entry) => {
+        const expiresIn = Math.max(entry.expiresAtSeconds - nowSeconds(), 60);
+        const body = JSON.stringify({
+          token_type: "Bearer",
+          access_token: entry.token,
+          expires_in: expiresIn,
+          ext_expires_in: expiresIn,
+        });
+        res.writeHead(200, {
+          "content-type": "application/json",
+          "content-length": Buffer.byteLength(body),
+        });
+        res.end(body);
+        console.log(`[token-broker] issued token, expires in ${expiresIn}s`);
+      })
+      .catch((error) => {
+        const body = JSON.stringify({
+          error: "invalid_grant",
+          error_description: "unable to acquire a token from the Azure CLI session",
+        });
+        res.writeHead(500, {
+          "content-type": "application/json",
+          "content-length": Buffer.byteLength(body),
+        });
+        res.end(body);
+        console.error(`[token-broker] ${error.message}`);
+      });
+  });
 });
 
 server.listen(PORT, HOST, () => {
-	console.log(`[token-broker] listening on http://${HOST}:${PORT}`);
-	console.log(`[token-broker] resource: ${RESOURCE}`);
-	console.log("[token-broker] requires an active `az login` session");
+  console.log(`[token-broker] listening on http://${HOST}:${PORT}`);
+  console.log(`[token-broker] resource: ${RESOURCE}`);
+  console.log("[token-broker] requires an active `az login` session");
 });
