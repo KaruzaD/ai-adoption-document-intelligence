@@ -86,7 +86,7 @@ Runs **daily at 02:30**, up to 2,000 rows per run.
 ## Review-session janitor
 
 Controlled by `REVIEW_SESSION_RETENTION_DAYS`. Deletes completed
-`review_sessions` (status `approved`, `escalated`, or `skipped`) whose
+`review_sessions` (status `approved`, `flagged`, or `abandoned`) whose
 `completed_at` is older than the configured window. Cascades to
 `field_corrections` and `document_locks`.
 
