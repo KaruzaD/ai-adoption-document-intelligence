@@ -23,4 +23,4 @@ None.
 ## Description
 Adds the specified user to the specified group by upserting a `UserGroup` record (default role `EDITOR`). Validates group existence before assignment. The operation is idempotent: if the user is already a member, the existing membership (including its role) is left unchanged and no error is thrown. A `member_added` audit event is recorded.
 
-Authorization is enforced by the `@Identity` guard (`groupIdFrom` the `groupId` path param, minimum role `ADMIN`); system admins bypass the group-membership check.
+Authorization is enforced by the `@Identity` guard (`groupPermissions: { groupIdFrom: { param: "groupId" }, requiredPermissions: [Permission.GROUP_USER_ADD] } }`); system admins bypass the group-membership check.
