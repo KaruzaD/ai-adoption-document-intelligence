@@ -8,6 +8,7 @@ import { AuthService, LoginUrlResult } from "./auth.service";
 import { AUTH_COOKIE_NAMES } from "./cookie-auth.utils";
 import { OAuthCallbackQueryDto } from "./dto";
 import { TokenResponseDto } from "./dto/token-response.dto";
+import { RoleClaimsMap } from "./role-permissions";
 import { User } from "./types";
 
 describe("AuthController", () => {
@@ -351,6 +352,7 @@ describe("AuthController", () => {
             id: "group-1",
             name: "Group One",
             role: GroupRole.EDITOR,
+            permissions: RoleClaimsMap[GroupRole.EDITOR],
           }),
         ],
       });
@@ -407,8 +409,12 @@ describe("AuthController", () => {
           id: "group-1",
           name: "Group One",
           role: GroupRole.ADMIN,
+          permissions: RoleClaimsMap[GroupRole.ADMIN],
         }),
       ]);
+      expect(result.groups[0].permissions).not.toEqual(
+        RoleClaimsMap[GroupRole.EDITOR],
+      );
     });
 
     it("should return 0 expires_in if token is expired", async () => {
