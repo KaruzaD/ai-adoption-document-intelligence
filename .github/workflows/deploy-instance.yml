@@ -59,8 +59,16 @@ jobs:
             IMAGE_TAG="bcgov-di-test"
             SHA_TAG="bcgov-di-test-${GITHUB_SHA::12}"
             ENV="test"
-          elif [[ "${{ github.ref_name }}" == "main" ]]; then
-            # manual dispatch from main → prod instance; floating tag + immutable SHA tag for rollback
+          elif [[ "${{ inputs.environment }}" == "prod" ]]; then
+            # manual prod deploy: main only, fixed instance, no overrides; floating tag + immutable SHA tag for rollback
+            if [[ "${{ github.ref_name }}" != "main" ]]; then
+              echo "::error::prod deploys run from main only (this run is on '${{ github.ref_name }}')"
+              exit 1
+            fi
+            if [[ -n "${{ inputs.namespace }}" || -n "${{ inputs.instance_name }}" ]]; then
+              echo "::error::prod deploys do not accept namespace or instance_name overrides"
+              exit 1
+            fi
             INSTANCE="bcgov-di"
             IMAGE_TAG="bcgov-di"
             SHA_TAG="bcgov-di-${GITHUB_SHA::12}"
