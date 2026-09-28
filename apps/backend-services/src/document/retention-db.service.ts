@@ -1,12 +1,19 @@
-import { PrismaClient, ReviewStatus } from "@generated/client";
+import { DocumentStatus, PrismaClient, ReviewStatus } from "@generated/client";
 import { Injectable } from "@nestjs/common";
 import { PrismaService } from "@/database/prisma.service";
 
+// TODO: add ReviewStatus.rejected once it exists in the schema.
 /** Terminal review statuses whose sessions are eligible for age-based deletion. */
 const TERMINAL_REVIEW_STATUSES: ReviewStatus[] = [
   ReviewStatus.approved,
-  ReviewStatus.flagged,
   ReviewStatus.abandoned,
+];
+
+/** Terminal document statuses indicating the parent workflow has finished. */
+const TERMINAL_DOCUMENT_STATUSES: DocumentStatus[] = [
+  DocumentStatus.complete,
+  DocumentStatus.failed,
+  DocumentStatus.conversion_failed,
 ];
 
 /**
@@ -76,8 +83,10 @@ export class RetentionDbService {
 
   /**
    * Deletes up to `limit` completed review sessions (and their cascading
-   * `field_corrections`) whose `completed_at` is before `olderThan`.
-   * In-progress sessions are never eligible.
+   * `field_corrections`) whose `completed_at` is before `olderThan` and whose
+   * parent document's workflow has also reached a terminal state.
+   * In-progress sessions, and sessions whose document workflow is still
+   * ongoing, are never eligible.
    *
    * @param olderThan - Delete sessions completed before this timestamp.
    * @param limit - Maximum rows to delete per call.
@@ -91,6 +100,7 @@ export class RetentionDbService {
       where: {
         status: { in: TERMINAL_REVIEW_STATUSES },
         completed_at: { lt: olderThan },
+        document: { status: { in: TERMINAL_DOCUMENT_STATUSES } },
       },
       select: { id: true },
       orderBy: { completed_at: "asc" },

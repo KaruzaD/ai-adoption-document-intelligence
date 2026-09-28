@@ -1,4 +1,4 @@
-import { ReviewStatus } from "@generated/client";
+import { DocumentStatus, ReviewStatus } from "@generated/client";
 import { Test, TestingModule } from "@nestjs/testing";
 import { PrismaService } from "@/database/prisma.service";
 import { RetentionDbService } from "./retention-db.service";
@@ -158,11 +158,19 @@ describe("RetentionDbService", () => {
             status: {
               in: expect.arrayContaining([
                 ReviewStatus.approved,
-                ReviewStatus.flagged,
                 ReviewStatus.abandoned,
               ]),
             },
             completed_at: { lt: CUTOFF },
+            document: {
+              status: {
+                in: expect.arrayContaining([
+                  DocumentStatus.complete,
+                  DocumentStatus.failed,
+                  DocumentStatus.conversion_failed,
+                ]),
+              },
+            },
           },
           take: LIMIT,
         }),
