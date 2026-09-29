@@ -362,6 +362,51 @@ describe("IdentityGuard", () => {
     ).toEqual({ g1: GroupRole.EDITOR, g2: GroupRole.ADMIN });
   });
 
+  it("should set resolvedGroups with names from the memberships the database returns", async () => {
+    // findUserWithGroups returns only memberships in groups that are not
+    // soft-deleted (see UserDbService.findUserWithGroupNames).
+    userService.findUserWithGroups.mockResolvedValue({
+      is_system_admin: false,
+      actor_id: "actor-id",
+      userGroups: [
+        {
+          user_id: "user-1",
+          group_id: "g1",
+          role: GroupRole.REVIEWER,
+          created_at: new Date(),
+          group: { id: "g1", name: "Group One", deleted_at: null },
+        },
+        {
+          user_id: "user-1",
+          group_id: "g2",
+          role: GroupRole.ADMIN,
+          created_at: new Date(),
+          group: { id: "g2", name: "Group Two", deleted_at: null },
+        },
+      ],
+    } as never);
+
+    const identityGuard = new IdentityGuard(
+      createReflectorWithIdentity(),
+      userService as unknown as UserService,
+    );
+    const request: Record<string, unknown> = {
+      user: { sub: "user-1" },
+    };
+
+    await identityGuard.canActivate(createContext(request));
+
+    expect(request.resolvedIdentity).toEqual(
+      expect.objectContaining({
+        groupRoles: { g1: GroupRole.REVIEWER, g2: GroupRole.ADMIN },
+        resolvedGroups: [
+          { id: "g1", name: "Group One", role: GroupRole.REVIEWER },
+          { id: "g2", name: "Group Two", role: GroupRole.ADMIN },
+        ],
+      }),
+    );
+  });
+
   it("should set groupRoles to an empty record when @Identity is present and user has no groups", async () => {
     userService.findUserWithGroups.mockResolvedValue({
       is_system_admin: false,

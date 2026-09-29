@@ -1391,7 +1391,7 @@ The `IdentityGuard` (global guard, position 4) runs after authentication and enr
 
 | Auth Method | Identity Fields | How Resolved |
 |------------|----------------|-------------|
-| JWT (Keycloak SSO) | `{ userId, isSystemAdmin, groupRoles, resolvedGroups, actorId }` | Single DB query — `UserService.findUserWithGroups(userId)` — returning `is_system_admin`, per-group roles, and group names together. No additional queries needed downstream. |
+| JWT (Keycloak SSO) | `{ userId, isSystemAdmin, groupRoles, resolvedGroups, actorId }` | Single DB query — `UserService.findUserWithGroups(userId)` — returning `is_system_admin`, per-group roles, and group names together. Memberships in soft-deleted groups are left out, so they grant no access. No additional queries needed downstream. |
 | API Key | `{ isSystemAdmin: false, groupRoles: { [groupId]: EDITOR }, resolvedGroups: [], actorId }` | Populated directly from `request.apiKey` (set by `ApiKeyAuthGuard`). No database queries required. API keys are always granted `GroupRole.EDITOR` within their scoped group. |
 
 See [GROUP_RESOURCE_AUTHORIZATION.md](./GROUP_RESOURCE_AUTHORIZATION.md) for the full controller-by-controller coverage.

@@ -17,7 +17,7 @@ import {
 import { ComponentType, ReactElement } from "react";
 import { Navigate } from "react-router-dom";
 import { useGroup } from "./auth/GroupContext";
-import { Permission } from "./auth/NoGroupGuard";
+import { Permission } from "./auth/permissions";
 import { useAuth } from "./auth/useAuth";
 import { ReviewQueuePage } from "./features/annotation/hitl/pages/ReviewQueuePage";
 import { ReviewWorkspacePage } from "./features/annotation/hitl/pages/ReviewWorkspacePage";
@@ -265,6 +265,7 @@ export const appRoutes: AppRouteConfig[] = [
   {
     path: "benchmarking/datasets/:id/versions/:versionId/review/:sessionId",
     permissions: [
+      Permission.BENCHMARK_RETRIEVE,
       Permission.HITL_SESSION_RETRIEVE,
       Permission.HITL_CORRECTION_RETRIEVE,
     ],

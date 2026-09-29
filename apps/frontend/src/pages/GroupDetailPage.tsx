@@ -2,7 +2,7 @@ import { type JSX, useState } from "react";
 import { useMatch, useNavigate } from "react-router-dom";
 import { useAuth } from "../auth/AuthContext";
 import { useGroup } from "../auth/GroupContext";
-import { Permission } from "../auth/NoGroupGuard";
+import { Permission } from "../auth/permissions";
 import { GroupRequestsTab } from "../components/group/GroupRequestsTab";
 import { MembersTab } from "../components/group/MembersTab";
 import {

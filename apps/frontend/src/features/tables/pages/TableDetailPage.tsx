@@ -3,7 +3,7 @@ import { useState } from "react";
 import { useParams } from "react-router-dom";
 import { useAuth } from "@/auth/AuthContext";
 import { useGroup } from "@/auth/GroupContext";
-import { Permission } from "@/auth/NoGroupGuard";
+import { Permission } from "@/auth/permissions";
 import {
   Button,
   Group,

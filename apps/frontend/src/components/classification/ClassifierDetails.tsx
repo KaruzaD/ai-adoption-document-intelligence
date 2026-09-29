@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useAuth } from "@/auth/AuthContext";
 import { useGroup } from "@/auth/GroupContext";
-import { Permission } from "@/auth/NoGroupGuard";
+import { Permission } from "@/auth/permissions";
 import { DeleteClassifierConfirmationModal } from "@/components/classification/ClassifierModals";
 import { useClassifier } from "@/data/hooks/useClassifier";
 import { ClassifierModel } from "@/shared/types/classifier";

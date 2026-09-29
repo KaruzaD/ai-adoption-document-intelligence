@@ -1,7 +1,6 @@
-import { GroupRole } from "@/generated";
-
-// No need to include system-admin-only permissions here.
-// If you update these, update the frontend copy in apps/frontend/src/auth/permissions.ts
+// This list is for frontend reference only.
+// It should match the authoritative source in backend-services/src/auth/role-permissions.ts
+// The mapping of roles to permissions comes from the backend.
 export enum Permission {
   // API-keys
   API_KEY_RETRIEVE,
@@ -105,56 +104,3 @@ export enum Permission {
   WORKFLOW_UPDATE,
   WORKFLOW_DELETE,
 }
-
-const { ADMIN, EDITOR, REVIEWER } = GroupRole;
-
-// Numeric enums include reverse-mapping string keys in Object.values(); filter to numbers only.
-const allPermissions = Object.values(Permission).filter(
-  (v): v is Permission => typeof v === "number",
-);
-
-// Reminder that this is group admins only, not system-admins.
-const groupAdminOnlyPermissions = [
-  Permission.API_KEY_RETRIEVE,
-  Permission.API_KEY_CREATE,
-  Permission.API_KEY_DELETE,
-  Permission.CLASSIFIER_DELETE,
-  Permission.GROUP_UPDATE,
-  Permission.GROUP_REQUESTS_APPROVE_DENY,
-  Permission.GROUP_REQUESTS_RETRIEVE,
-  Permission.GROUP_USER_ADD,
-  Permission.GROUP_USER_REMOVE,
-  Permission.GROUP_USER_ROLE_UPDATE,
-  Permission.GROUP_BILLING,
-  Permission.USAGE_RETRIEVE,
-  Permission.TABLE_CREATE,
-  Permission.TABLE_UPDATE,
-  Permission.TABLE_DELETE,
-  Permission.TABLE_COLUMN_CREATE,
-  Permission.TABLE_COLUMN_UPDATE,
-  Permission.TABLE_COLUMN_DELETE,
-];
-
-export const RoleClaimsMap: Record<GroupRole, Permission[]> = {
-  [ADMIN]: allPermissions,
-  [EDITOR]: allPermissions.filter(
-    (p) => !groupAdminOnlyPermissions.includes(p),
-  ),
-  [REVIEWER]: [
-    Permission.HITL_QUEUE_RETRIEVE,
-    Permission.HITL_SESSION_RETRIEVE,
-    Permission.HITL_SESSION_PROGRESS,
-    Permission.HITL_SESSION_REOPEN,
-    Permission.HITL_SESSION_CREATE,
-    Permission.HITL_CORRECTION_SUBMIT,
-    Permission.HITL_CORRECTION_RETRIEVE,
-    Permission.HITL_CORRECTION_DELETE,
-    Permission.HITL_APPROVE_DENY,
-    // The review workspace renders the document through the view endpoint,
-    // falling back to download for documents without a normalized PDF.
-    Permission.DOCUMENT_VIEW,
-    Permission.DOCUMENT_DOWNLOAD,
-    Permission.GROUP_RETRIEVE,
-    Permission.GROUP_LEAVE,
-  ],
-};

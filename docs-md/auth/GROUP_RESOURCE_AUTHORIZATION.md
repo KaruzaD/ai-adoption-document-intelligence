@@ -8,11 +8,13 @@ Group members are assigned one of three roles defined in the `GroupRole` enum. P
 
 | Role | Description | Permissions |
 |------|-------------|-------------|
-| `ADMIN` | Full access to all group operations, including member management and schema mutations | All permissions |
-| `EDITOR` | Standard contributor access — can create, read, update, and delete resources but cannot manage group membership or perform admin-only schema operations | All permissions except `GROUP_UPDATE`, `GROUP_REQUESTS_RETRIEVE`, `GROUP_REQUESTS_APPROVE_DENY`, `GROUP_USER_ADD`, `GROUP_USER_REMOVE`, `GROUP_USER_ROLE_UPDATE` |
-| `REVIEWER` | Limited access focused on HITL review workflows | `HITL_QUEUE_RETRIEVE`, `HITL_SESSION_*`, `HITL_CORRECTION_*`, `HITL_DATASET_*`, `HITL_APPROVE_DENY`, `GROUP_RETRIEVE` |
+| `ADMIN` | Full access to all group operations, including member management, API keys, billing and table schemas | All permissions |
+| `EDITOR` | Standard contributor access — can create, read, update, and delete resources, but cannot manage the group or its members, API keys, billing or table schemas, or delete classifiers | All permissions except the group-admin-only set: `API_KEY_*`, `CLASSIFIER_DELETE`, `GROUP_UPDATE`, `GROUP_REQUESTS_RETRIEVE`, `GROUP_REQUESTS_APPROVE_DENY`, `GROUP_USER_ADD`, `GROUP_USER_REMOVE`, `GROUP_USER_ROLE_UPDATE`, `GROUP_BILLING`, `USAGE_RETRIEVE`, `TABLE_CREATE`, `TABLE_UPDATE`, `TABLE_DELETE`, `TABLE_COLUMN_*` |
+| `REVIEWER` | Limited access focused on HITL review workflows | `HITL_QUEUE_RETRIEVE`, `HITL_SESSION_*`, `HITL_CORRECTION_*`, `HITL_APPROVE_DENY`, `DOCUMENT_VIEW`, `DOCUMENT_DOWNLOAD`, `GROUP_RETRIEVE`, `GROUP_LEAVE` |
 
 New members are assigned `EDITOR` by default. API keys are always granted `EDITOR` within their scoped group.
+
+The frontend reads each group's permissions from `GET /api/auth/me` to decide which pages and sidebar entries to show; see [FRONTEND_ROUTE_PERMISSIONS.md](./FRONTEND_ROUTE_PERMISSIONS.md). Those checks only shape the UI — the backend enforcement described below is what authorizes each request.
 
 ## Overview
 
