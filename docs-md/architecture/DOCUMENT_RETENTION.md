@@ -70,8 +70,13 @@ paths would already be gone.
 Controlled by `AUDIT_EVENT_RETENTION_DAYS`. Deletes `audit_events` rows whose
 `occurred_at` is older than the configured window.
 
-Runs **daily at 02:15**, up to 2,000 rows per run. The `occurred_at` index
-makes the eligibility query efficient.
+Runs **daily at 02:15**, in batches (see [How the database-only janitors
+batch](#how-the-database-only-janitors-batch)). The `occurred_at` index makes
+the eligibility query efficient.
+
+Audit rows are written on reads as well as writes — `document_list_accessed`
+and `document_accessed` fire on every list-page load and document fetch — so
+this table grows with traffic, not only with uploads.
 
 > **Note:** Audit data may be subject to statutory minimum retention. Confirm
 > compliance requirements before setting this variable in a regulated environment.
@@ -81,18 +86,62 @@ makes the eligibility query efficient.
 Controlled by `BENCHMARK_AUDIT_LOG_RETENTION_DAYS`. Deletes `benchmark_audit_logs`
 rows whose `timestamp` is older than the configured window.
 
-Runs **daily at 02:30**, up to 2,000 rows per run.
+Runs **daily at 02:30**, in batches.
 
 ## Review-session janitor
 
-Controlled by `REVIEW_SESSION_RETENTION_DAYS`. Deletes completed
-`review_sessions` (status `approved`, `flagged`, or `abandoned`) whose
-`completed_at` is older than the configured window. Cascades to
-`field_corrections` and `document_locks`.
+Controlled by `REVIEW_SESSION_RETENTION_DAYS`. Deletes `review_sessions` whose
+`completed_at` is older than the configured window, when both hold:
 
-In-progress sessions are never deleted regardless of age.
+1. The session status is `approved` or `abandoned`. `in_progress` sessions are
+   still open, and `flagged` sessions are escalations that still need action;
+   neither is deleted at any age.
+2. The session's document has finished processing (`complete`, `failed` or
+   `conversion_failed`).
 
-Runs **daily at 02:45**, up to 2,000 rows per run.
+Deletion cascades to `field_corrections` and `document_locks`.
+`field_corrections` holds each edit a reviewer made to an extracted field, and
+three features read it live: confusion profiles
+([`confusion-profile.service.ts`](../../apps/backend-services/src/confusion-profile/confusion-profile.service.ts)),
+HITL aggregation
+([`hitl-aggregation.service.ts`](../../apps/backend-services/src/hitl/hitl-aggregation.service.ts))
+and format suggestions
+([`format-suggestion.service.ts`](../../apps/backend-services/src/template-model/format-suggestion.service.ts)).
+Corrections this janitor deletes stop contributing to them. Benchmark datasets
+built from HITL sessions are unaffected, because the dataset builder copies the
+corrected values into ground-truth files.
+
+The document janitor removes the same rows when it deletes the parent document,
+so this janitor only deletes anything earlier when its window is shorter than
+`DOCUMENT_RETENTION_DAYS`, or when document retention is off.
+
+Runs **daily at 02:45**, in batches.
+
+## How the database-only janitors batch
+
+The audit-event, benchmark audit-log and review-session janitors each delete in
+batches of 2,000 rows: find up to 2,000 eligible IDs, then delete exactly those.
+A run keeps taking batches until one deletes nothing or the run has spent 5
+minutes. The cutoff date is fixed at the start of the run.
+
+The 5-minute budget bounds how much one run writes to the database's
+write-ahead log (WAL), which the backup repository archives. A large backlog —
+for example the first run after a variable is set on a long-lived environment —
+drains over several nights rather than in one burst.
+
+`backend-services` runs more than one replica and each runs every `@Cron` job,
+so the same janitor starts on every pod at once. The pods pick the same IDs;
+Postgres deletes each row once, and the pod whose `DELETE` arrives second waits
+for the first to commit and then finds those rows gone. A run stops on an empty
+batch rather than a short one because two pods can split a batch between them,
+and a short count then does not mean the backlog is empty. Whenever eligible
+rows remain, at least one pod's batch deletes something, so a run cannot end
+early while there is still work.
+
+The run log reports `deleted`, `batches` and `timeBudgetReached`. A run that
+reaches the budget night after night means rows are arriving faster than one
+5-minute run a day can delete them.
+
 ## Relationship to ephemeral cleanup
 
 The two janitors compose. A document processed by an ephemeral workflow has
@@ -108,7 +157,7 @@ The indexes on `documents` are all either group-scoped
 (`group_id`, `group_id + content_hash`, `group_id + created_at`) or
 workflow-scoped (`workflow_config_id`, and the partial
 `documents_purge_scan_idx`), so none of them serves this predicate. On a large
-`documents` table the daily run performs a sequential scan.
+`documents` table each run (every 6 hours) performs a sequential scan.
 
 ## Enabling it
 
