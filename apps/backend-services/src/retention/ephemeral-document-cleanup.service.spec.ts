@@ -194,6 +194,29 @@ describe("EphemeralDocumentCleanupService", () => {
     );
   });
 
+  it("runs under the purgeEphemeralDocuments lock", async () => {
+    mockDocumentDb.findPurgeableEphemeralDocuments.mockResolvedValue([]);
+
+    await service.purgeEphemeralDocuments();
+
+    expect(mockRetentionDbService.runWithDatabaseLock).toHaveBeenCalledWith(
+      "purgeEphemeralDocuments",
+      expect.any(Function),
+    );
+  });
+
+  it("does nothing when another container holds the lock", async () => {
+    mockRetentionDbService.runWithDatabaseLock.mockImplementationOnce(
+      async () => {},
+    );
+
+    await service.purgeEphemeralDocuments();
+
+    expect(
+      mockDocumentDb.findPurgeableEphemeralDocuments,
+    ).not.toHaveBeenCalled();
+  });
+
   it("aborts the run if the query fails", async () => {
     mockDocumentDb.findPurgeableEphemeralDocuments.mockRejectedValue(
       new Error("db down"),

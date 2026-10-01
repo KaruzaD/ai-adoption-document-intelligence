@@ -26,6 +26,9 @@ const mockBlobStorage = {
   deleteByPrefix: jest.fn(),
 };
 
+/** Stand-in for the lock-holding transaction client passed to job bodies. */
+const LOCK_TX = { lockTx: true };
+
 const mockRetentionDb = {
   deleteAuditEventsOlderThan: jest.fn(),
   deleteBenchmarkAuditLogsOlderThan: jest.fn(),
@@ -34,9 +37,13 @@ const mockRetentionDb = {
     .fn()
     .mockImplementation(
       async (_label: string, fn: (tx: object) => Promise<void>) => {
-        await fn({});
+        await fn(LOCK_TX);
       },
     ),
+};
+
+const mockAuditService = {
+  recordEvent: jest.fn(),
 };
 
 const mockLogger = {
@@ -63,7 +70,7 @@ describe("DocumentRetentionService", () => {
         { provide: BLOB_STORAGE, useValue: mockBlobStorage },
         { provide: RetentionDbService, useValue: mockRetentionDb },
         { provide: AppLoggerService, useValue: mockLogger },
-        { provide: AuditService, useValue: { recordEvent: jest.fn() } },
+        { provide: AuditService, useValue: mockAuditService },
       ],
     }).compile();
 
@@ -153,10 +160,9 @@ describe("DocumentRetentionService", () => {
       doc.id,
     ]);
     expect(mockBlobStorage.deleteByPrefix).toHaveBeenCalledWith(expectedPrefix);
-    expect(mockDocumentDb.deleteDocument).toHaveBeenCalledWith(
-      doc.id,
-      expect.anything(),
-    );
+    // Exact arguments: the row delete must not run in the lock transaction,
+    // or a rollback would keep rows whose blobs are already gone.
+    expect(mockDocumentDb.deleteDocument).toHaveBeenCalledWith(doc.id);
     expect(mockLogger.log).toHaveBeenCalledWith(
       "Document retention cleanup run complete",
       expect.objectContaining({ deleted: 1, errors: 0 }),
@@ -220,10 +226,7 @@ describe("DocumentRetentionService", () => {
 
     // First doc errored before DB delete; second doc fully deleted.
     expect(mockDocumentDb.deleteDocument).toHaveBeenCalledTimes(1);
-    expect(mockDocumentDb.deleteDocument).toHaveBeenCalledWith(
-      docs[1].id,
-      expect.anything(),
-    );
+    expect(mockDocumentDb.deleteDocument).toHaveBeenCalledWith(docs[1].id);
     expect(mockLogger.error).toHaveBeenCalledWith(
       expect.stringContaining(docs[0].id),
       expect.objectContaining({ documentId: docs[0].id }),
@@ -232,6 +235,51 @@ describe("DocumentRetentionService", () => {
       "Document retention cleanup run complete",
       expect.objectContaining({ deleted: 1, errors: 1 }),
     );
+  });
+
+  it("runs under the deleteExpiredDocuments lock", async () => {
+    mockDocumentDb.findExpiredDocuments.mockResolvedValue([]);
+
+    await service.deleteExpiredDocuments();
+
+    expect(mockRetentionDb.runWithDatabaseLock).toHaveBeenCalledWith(
+      "deleteExpiredDocuments",
+      expect.any(Function),
+    );
+  });
+
+  it("does nothing when another container holds the lock", async () => {
+    mockRetentionDb.runWithDatabaseLock.mockImplementationOnce(async () => {});
+
+    await service.deleteExpiredDocuments();
+
+    expect(mockDocumentDb.findExpiredDocuments).not.toHaveBeenCalled();
+    expect(mockBlobStorage.deleteByPrefix).not.toHaveBeenCalled();
+    expect(mockAuditService.recordEvent).not.toHaveBeenCalled();
+  });
+
+  it("records a document_retention_run audit event outside the lock transaction", async () => {
+    const docs = [
+      { id: "doceeeeeeeeeeeeeeeeeeeeeee", group_id: GROUP_A },
+      { id: "docffffffffffffffffffffffff", group_id: GROUP_B },
+    ];
+    mockDocumentDb.findExpiredDocuments.mockResolvedValue(docs);
+    mockDocumentDb.deleteDocument.mockResolvedValue(true);
+
+    await service.deleteExpiredDocuments();
+
+    expect(mockAuditService.recordEvent).toHaveBeenCalledTimes(1);
+    expect(mockAuditService.recordEvent).toHaveBeenCalledWith({
+      event_type: "document_retention_run",
+      resource_type: "document",
+      resource_id: "",
+      actor_id: "retention_system",
+      payload: {
+        documentIds: docs.map((d) => d.id),
+        daysRemoved: "90",
+        quantity: 2,
+      },
+    });
   });
 
   it("aborts the run and logs an error when the DB query fails", async () => {
@@ -267,6 +315,8 @@ function describeSimpleRetentionJob(params: {
     | "deleteBenchmarkAuditLogsOlderThan"
     | "deleteCompletedReviewSessionsOlderThan";
   logLabel: string;
+  auditEventType: string;
+  auditResourceType: string;
   getService: () => DocumentRetentionService;
 }): void {
   describe(params.methodName, () => {
@@ -320,7 +370,7 @@ function describeSimpleRetentionJob(params: {
       expect(mockRetentionDb[params.dbMethodName]).toHaveBeenCalledWith(
         expect.any(Date),
         2000,
-        expect.anything(),
+        LOCK_TX,
       );
       const [cutoff] = mockRetentionDb[params.dbMethodName].mock.calls[0] as [
         Date,
@@ -331,6 +381,45 @@ function describeSimpleRetentionJob(params: {
         before - expectedMs - 1000,
       );
       expect(cutoff.getTime()).toBeLessThanOrEqual(after - expectedMs + 1000);
+    });
+
+    it("runs under a lock named after the job", async () => {
+      mockRetentionDb[params.dbMethodName].mockResolvedValue(0);
+
+      await params.getService()[params.methodName]();
+
+      expect(mockRetentionDb.runWithDatabaseLock).toHaveBeenCalledWith(
+        params.methodName,
+        expect.any(Function),
+      );
+    });
+
+    it("does nothing when another container holds the lock", async () => {
+      mockRetentionDb.runWithDatabaseLock.mockImplementationOnce(
+        async () => {},
+      );
+
+      await params.getService()[params.methodName]();
+
+      expect(mockRetentionDb[params.dbMethodName]).not.toHaveBeenCalled();
+      expect(mockAuditService.recordEvent).not.toHaveBeenCalled();
+    });
+
+    it("records its run audit event in the lock transaction", async () => {
+      mockRetentionDb[params.dbMethodName].mockResolvedValue(3);
+
+      await params.getService()[params.methodName]();
+
+      expect(mockAuditService.recordEvent).toHaveBeenCalledWith(
+        {
+          event_type: params.auditEventType,
+          resource_type: params.auditResourceType,
+          resource_id: "",
+          actor_id: "retention_system",
+          payload: { daysRemoved: "90" },
+        },
+        LOCK_TX,
+      );
     });
 
     it("logs the deleted count when rows were removed", async () => {
@@ -467,6 +556,8 @@ describeSimpleRetentionJob({
   methodName: "deleteExpiredAuditEvents",
   dbMethodName: "deleteAuditEventsOlderThan",
   logLabel: "Audit event",
+  auditEventType: "audit_events_retention_run",
+  auditResourceType: "audit_event",
   getService: () => service,
 });
 
@@ -476,6 +567,8 @@ describeSimpleRetentionJob({
   methodName: "deleteExpiredBenchmarkAuditLogs",
   dbMethodName: "deleteBenchmarkAuditLogsOlderThan",
   logLabel: "Benchmark audit log",
+  auditEventType: "benchmark_audit_logs_retention_run",
+  auditResourceType: "benchmark_audit_log",
   getService: () => service,
 });
 
@@ -485,5 +578,7 @@ describeSimpleRetentionJob({
   methodName: "deleteExpiredReviewSessions",
   dbMethodName: "deleteCompletedReviewSessionsOlderThan",
   logLabel: "Review session",
+  auditEventType: "review_session_retention_run",
+  auditResourceType: "review_session",
   getService: () => service,
 });

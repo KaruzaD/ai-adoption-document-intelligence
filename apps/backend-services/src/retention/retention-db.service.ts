@@ -21,6 +21,13 @@ const TERMINAL_DOCUMENT_STATUSES: DocumentStatus[] = [
 ];
 
 /**
+ * How long the lock-holding transaction may stay open (ms). Jobs run inside it can
+ * spend minutes on blob-storage calls; Prisma's 5 000 ms default would roll the
+ * transaction back mid-run and release the lock early.
+ */
+const LOCK_TRANSACTION_TIMEOUT_MS = 15 * 60 * 1000;
+
+/**
  * Database service for bulk retention deletes across tables that do not belong
  * to the Document module but contribute to unbounded row growth.
  *
@@ -35,25 +42,42 @@ export class RetentionDbService {
     private readonly logger: AppLoggerService,
   ) {}
 
+  /**
+   * Runs `fn` only if no other container holds the lock named `label`, using a
+   * transaction-scoped Postgres advisory lock that is released when the
+   * transaction ends. Logs and returns without running `fn` when the lock is
+   * already held.
+   *
+   * `tx` is the lock-holding transaction. Use it only for database-only work
+   * that should commit or roll back as one unit; anything paired with an
+   * irreversible side effect (such as a blob delete) must use the ordinary
+   * client so it commits immediately.
+   *
+   * @param label - Lock name; one per cron job.
+   * @param fn - The job body.
+   */
   async runWithDatabaseLock(
     label: string,
     fn: (tx: Prisma.TransactionClient) => Promise<void>,
-  ) {
-    await this.prismaService.transaction(async (tx) => {
-      const [result] = await tx.$queryRaw<
-        { pg_try_advisory_xact_lock: boolean }[]
-      >`
+  ): Promise<void> {
+    await this.prismaService.transaction(
+      async (tx) => {
+        const [result] = await tx.$queryRaw<
+          { pg_try_advisory_xact_lock: boolean }[]
+        >`
           SELECT pg_try_advisory_xact_lock(hashtext(${label}));
         `;
-      if (!result || !result.pg_try_advisory_xact_lock) {
-        this.logger.log(
-          `[${label} Cron] Already running on another container. Skipping.`,
-        );
-        return;
-      }
+        if (!result || !result.pg_try_advisory_xact_lock) {
+          this.logger.log(
+            `[${label} Cron] Already running on another container. Skipping.`,
+          );
+          return;
+        }
 
-      await fn(tx);
-    });
+        await fn(tx);
+      },
+      { timeout: LOCK_TRANSACTION_TIMEOUT_MS },
+    );
   }
 
   /**

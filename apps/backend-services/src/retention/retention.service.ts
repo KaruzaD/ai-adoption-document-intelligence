@@ -77,7 +77,7 @@ export class DocumentRetentionService {
   async deleteExpiredDocuments(): Promise<void> {
     await this.retentionDb.runWithDatabaseLock(
       "deleteExpiredDocuments",
-      async (tx) => {
+      async () => {
         const raw = process.env[DOCUMENT_RETENTION_ENV_VAR];
         const retentionDays = raw !== undefined ? parseInt(raw, 10) : NaN;
 
@@ -120,7 +120,7 @@ export class DocumentRetentionService {
         let errors = 0;
         for (const doc of documents) {
           try {
-            await this.deleteDocument(doc, tx);
+            await this.deleteDocument(doc);
             deleted++;
           } catch (err) {
             errors++;
@@ -160,20 +160,21 @@ export class DocumentRetentionService {
    * Blob deletion is always attempted first so a DB failure does not leave
    * orphaned blobs. Both operations are idempotent and safe to retry.
    *
+   * The row delete deliberately does not use the lock transaction: the blob
+   * delete cannot be rolled back, so the row delete must commit straight away
+   * rather than with the rest of the batch.
+   *
    * @param doc - Minimal document record with id and group_id.
    */
-  private async deleteDocument(
-    doc: {
-      id: string;
-      group_id: string;
-    },
-    tx: Prisma.TransactionClient,
-  ): Promise<void> {
+  private async deleteDocument(doc: {
+    id: string;
+    group_id: string;
+  }): Promise<void> {
     const prefix = buildBlobPrefixPath(doc.group_id, OperationCategory.OCR, [
       doc.id,
     ]);
     await this.blobStorage.deleteByPrefix(prefix);
-    await this.documentDb.deleteDocument(doc.id, tx);
+    await this.documentDb.deleteDocument(doc.id);
   }
 
   /**

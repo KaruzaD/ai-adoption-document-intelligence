@@ -5,11 +5,8 @@ import { AppLoggerService } from "@/logging/app-logger.service";
 import { mockAppLogger } from "@/testUtils/mockAppLogger";
 import { RetentionDbService } from "./retention-db.service";
 
-const mockPrisma = {
-  transaction: async (_tx: Prisma.TransactionClient) => {},
-};
-
 const mockTxImpl = {
+  $queryRaw: jest.fn(),
   auditEvent: {
     findMany: jest.fn().mockResolvedValue([]),
     deleteMany: jest.fn().mockResolvedValue({ count: 0 }),
@@ -26,6 +23,15 @@ const mockTxImpl = {
 
 const mockTransactionClient = mockTxImpl as unknown as Prisma.TransactionClient;
 
+const mockPrismaService = {
+  transaction: jest.fn(
+    async (
+      fn: (tx: Prisma.TransactionClient) => Promise<void>,
+      _options?: { timeout?: number },
+    ) => fn(mockTransactionClient),
+  ),
+};
+
 describe("RetentionDbService", () => {
   let service: RetentionDbService;
 
@@ -33,7 +39,7 @@ describe("RetentionDbService", () => {
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         RetentionDbService,
-        { provide: PrismaService, useValue: { prisma: mockPrisma } },
+        { provide: PrismaService, useValue: mockPrismaService },
         { provide: AppLoggerService, useValue: mockAppLogger },
       ],
     }).compile();
@@ -44,6 +50,77 @@ describe("RetentionDbService", () => {
 
   const CUTOFF = new Date("2026-01-01T00:00:00Z");
   const LIMIT = 50;
+
+  // -------------------------------------------------------------------------
+  // runWithDatabaseLock
+  // -------------------------------------------------------------------------
+
+  describe("runWithDatabaseLock", () => {
+    it("runs the job with the lock-holding transaction when the lock is acquired", async () => {
+      mockTxImpl.$queryRaw.mockResolvedValue([
+        { pg_try_advisory_xact_lock: true },
+      ]);
+      const job = jest.fn().mockResolvedValue(undefined);
+
+      await service.runWithDatabaseLock("someJob", job);
+
+      expect(mockTxImpl.$queryRaw).toHaveBeenCalledTimes(1);
+      const [sqlParts, label] = mockTxImpl.$queryRaw.mock.calls[0] as [
+        TemplateStringsArray,
+        string,
+      ];
+      expect(sqlParts.join("?")).toContain(
+        "pg_try_advisory_xact_lock(hashtext(?))",
+      );
+      expect(label).toBe("someJob");
+      expect(job).toHaveBeenCalledWith(mockTransactionClient);
+    });
+
+    it("skips the job and logs when another container holds the lock", async () => {
+      mockTxImpl.$queryRaw.mockResolvedValue([
+        { pg_try_advisory_xact_lock: false },
+      ]);
+      const job = jest.fn();
+
+      await service.runWithDatabaseLock("someJob", job);
+
+      expect(job).not.toHaveBeenCalled();
+      expect(mockAppLogger.log).toHaveBeenCalledWith(
+        expect.stringContaining("Already running on another container"),
+      );
+    });
+
+    it("skips the job when the lock query returns no row", async () => {
+      mockTxImpl.$queryRaw.mockResolvedValue([]);
+      const job = jest.fn();
+
+      await service.runWithDatabaseLock("someJob", job);
+
+      expect(job).not.toHaveBeenCalled();
+    });
+
+    it("opens the lock transaction with a timeout well above Prisma's 5 s default", async () => {
+      mockTxImpl.$queryRaw.mockResolvedValue([
+        { pg_try_advisory_xact_lock: true },
+      ]);
+
+      await service.runWithDatabaseLock("someJob", jest.fn());
+
+      const [, options] = mockPrismaService.transaction.mock.calls[0];
+      expect(options?.timeout).toBe(15 * 60 * 1000);
+    });
+
+    it("propagates a job failure so the transaction rolls back and releases the lock", async () => {
+      mockTxImpl.$queryRaw.mockResolvedValue([
+        { pg_try_advisory_xact_lock: true },
+      ]);
+      const job = jest.fn().mockRejectedValue(new Error("job failed"));
+
+      await expect(service.runWithDatabaseLock("someJob", job)).rejects.toThrow(
+        "job failed",
+      );
+    });
+  });
 
   // -------------------------------------------------------------------------
   // deleteAuditEventsOlderThan
