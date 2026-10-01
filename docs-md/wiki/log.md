@@ -119,9 +119,9 @@ Use grep-friendly headings: `## [YYYY-MM-DD] operation | Title` where operation 
 - `architecture/HITL_ARCHITECTURE.md`: split the reopen transition in two — an approved session reopens for its own reviewer within five minutes, a flagged session is taken over by any group member with no time limit — and documented the Flagged tab's View/Take actions.
 - `hitl.md`: flagging is a hand-off rather than a terminal state; editing always holds a lock.
 
-## [2026-08-28] maintenance | Backup RPO/RTO doc + DOCUMENT_RETENTION_DAYS agreed value
+## [2026-08-28] maintenance | Backup RPO/RTO doc
 
-- Created `docs-md/operations/BACKUP_RPO_RTO.md` recording RPO (4 h) and RTO (~2 weeks) as set by PR #238 (weekly fulls, 4-hour incrementals, 2-full count retention).
+- Created `docs-md/operations/BACKUP_RPO_RTO.md` recording the RPO, recovery window and RTO implied by PR #238's backup settings (weekly fulls, 4-hour incrementals, 2-full count retention).
 
 ## [2026-09-29] ingest | Frontend route permissions and the reviewer role
 

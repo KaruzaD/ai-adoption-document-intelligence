@@ -41,9 +41,10 @@ deleted, at any age.
 
 ### How it works
 
-A NestJS `@Cron` service ([`DocumentRetentionService`](../../apps/backend-services/src/document/document-retention.service.ts))
+A NestJS `@Cron` service ([`DocumentRetentionService`](../../apps/backend-services/src/retention/retention.service.ts))
 runs **every 6 hours** (`0 */6 * * *`) and processes up to 500 documents per
-run.
+run, under the `deleteExpiredDocuments` lock (see
+[Running on more than one replica](#running-on-more-than-one-replica)).
 Each run:
 
 1. Reads `DOCUMENT_RETENTION_DAYS`. If it is absent or not a positive integer,
@@ -52,8 +53,10 @@ Each run:
    `id` and `group_id` (`DocumentDbService.findExpiredDocuments`).
 3. For each document, in this order:
    - `blobStorage.deleteByPrefix({group}/ocr/{docId}/)`
-   - `DocumentDbService.deleteDocument(id)`
-4. Logs a run summary with the candidate, deleted and error counts.
+   - `DocumentDbService.deleteDocument(id)` — committed on its own, straight
+     after the blob delete, not in the lock transaction
+4. Records a `document_retention_run` audit event (see [Audit](#audit)).
+5. Logs a run summary with the candidate, deleted and error counts.
 
 Per-document failures are logged and isolated — the rest of the batch still
 runs, and the failed document is retried on the next run. Both steps are
@@ -129,18 +132,52 @@ write-ahead log (WAL), which the backup repository archives. A large backlog —
 for example the first run after a variable is set on a long-lived environment —
 drains over several nights rather than in one burst.
 
-`backend-services` runs more than one replica and each runs every `@Cron` job,
-so the same janitor starts on every pod at once. The pods pick the same IDs;
-Postgres deletes each row once, and the pod whose `DELETE` arrives second waits
-for the first to commit and then finds those rows gone. A run stops on an empty
-batch rather than a short one because two pods can split a batch between them,
-and a short count then does not mean the backlog is empty. Whenever eligible
-rows remain, at least one pod's batch deletes something, so a run cannot end
-early while there is still work.
+A run executes on one replica at a time (see [Running on more than one
+replica](#running-on-more-than-one-replica)). Its batches run inside the lock
+transaction, so they commit together when the run ends; a run that fails part
+way through deletes nothing and the next run starts again from the oldest rows.
 
 The run log reports `deleted`, `batches` and `timeBudgetReached`. A run that
 reaches the budget night after night means rows are arriving faster than one
 5-minute run a day can delete them.
+
+## Running on more than one replica
+
+The janitors are `@Cron` methods in the backend API, so every backend replica
+schedules every job at the same moment. Each job body runs inside
+`RetentionDbService.runWithDatabaseLock(label, fn)`
+([`retention-db.service.ts`](../../apps/backend-services/src/retention/retention-db.service.ts)),
+which:
+
+1. Opens a Prisma transaction with a **15-minute** timeout.
+2. Calls `pg_try_advisory_xact_lock(hashtext(label))`. This Postgres advisory
+   lock is held by the transaction and released when it commits or rolls back.
+3. If the lock is already held, logs
+   `[<label> Cron] Already running on another container. Skipping.` and
+   returns without running the job.
+4. Otherwise runs the job, passing it the lock transaction.
+
+The lock label is the job's method name: `deleteExpiredDocuments`,
+`deleteExpiredAuditEvents`, `deleteExpiredBenchmarkAuditLogs`,
+`deleteExpiredReviewSessions`, and `purgeEphemeralDocuments` for
+[ephemeral cleanup](./EPHEMERAL_DOCUMENT_CLEANUP.md).
+
+What runs inside the lock transaction differs by job:
+
+| Job | Uses the lock transaction for | Why |
+|-----|-------------------------------|-----|
+| Document retention | Nothing; row deletes use the ordinary client | Each row delete follows an irreversible blob delete, so it must commit immediately. If it waited for the batch, a rollback would keep rows whose files are gone. |
+| Audit-event, benchmark-log, review-session janitors | Every batch's `deleteMany` and the run's audit event | Database-only work; a run's deletes and its audit event commit or roll back together. |
+| Ephemeral cleanup | Nothing | Every step is an external call or an idempotent stamp. |
+
+The 15-minute timeout exists because Prisma's default for an interactive
+transaction is 5 seconds. A document-retention batch spends most of its time in
+blob-storage calls and routinely takes longer than that. If a run does exceed
+15 minutes, the transaction rolls back and the lock is released: document
+deletes already made are kept, and a database-only janitor's deletes are undone
+and retried on its next run. The database-only janitors stop themselves after 5
+minutes (see [How the database-only janitors batch](#how-the-database-only-janitors-batch)),
+well inside that limit.
 
 ## Relationship to ephemeral cleanup
 
@@ -178,7 +215,33 @@ Variable reference: [ENVIRONMENT_CONFIGURATION.md](../operations/ENVIRONMENT_CON
 
 ## Audit
 
-Deletion by this janitor records no audit event; the only record is the run
-summary in the application log. The user-initiated `DELETE /api/documents/:id`
-path, which removes the same rows, does record one. See
+Each janitor records **one audit event per run**, not one per deleted row. The
+event types are listed in [AUDIT.md](./AUDIT.md#retention-janitors). All of
+them use `actor_id: "retention_system"` and `resource_id: ""`.
+
+| event_type | Recorded when | Payload | Transaction |
+|------------|---------------|---------|-------------|
+| `document_retention_run` | The run found at least one eligible document | `documentIds`, `daysRemoved`, `quantity` | None (written after the batch, so an audit failure cannot undo deletes) |
+| `audit_events_retention_run` | Every run that acquired the lock | `daysRemoved` | Lock transaction |
+| `benchmark_audit_logs_retention_run` | Every run that acquired the lock | `daysRemoved` | Lock transaction |
+| `review_session_retention_run` | Every run that acquired the lock | `daysRemoved` | Lock transaction |
+
+How to read these events:
+
+- `daysRemoved` is the raw value of the job's `*_RETENTION_DAYS` variable, i.e.
+  the retention window, not a count. It is absent when the variable is unset.
+- `document_retention_run.documentIds` lists **every candidate** in the batch,
+  including documents whose deletion failed and that will be retried. `quantity`
+  is the number actually deleted. No event is written when the variable is
+  unset, the query fails, or nothing is eligible.
+- The three database-only events are written on every scheduled run that
+  acquired the lock, **including runs that did nothing** because the variable is
+  unset or invalid, and runs whose delete failed. They do not carry a deleted
+  count. The count is only in the application log's run summary.
+- `actor_id` is the string `retention_system`. [AUDIT.md](./AUDIT.md) describes
+  `null` as the convention for system-initiated actions; to find these events,
+  filter on `event_type`, not `actor_id`.
+
+The user-initiated `DELETE /api/documents/:id` path, which removes the same rows,
+records a per-document event. See
 [TRANSACTION_AND_AUDIT_AUDIT.md](./TRANSACTION_AND_AUDIT_AUDIT.md).
