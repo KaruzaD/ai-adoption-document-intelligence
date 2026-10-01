@@ -63,6 +63,7 @@ describe("RequestLoggingInterceptor", () => {
       resolvedIdentity: {
         userId: "u-1",
         actorId: "u-1",
+        resolvedGroups: [],
         isSystemAdmin: false,
         groupRoles: {},
       },
@@ -130,6 +131,7 @@ describe("RequestLoggingInterceptor", () => {
           groupRoles: {},
           isSystemAdmin: false,
           actorId: "actor-1",
+          resolvedGroups: [],
         },
       } as Partial<Request>);
       const ctx = makeContext(req);
@@ -170,6 +172,7 @@ describe("RequestLoggingInterceptor", () => {
           userId: "user-1",
           groupRoles: {},
           actorId: "actor-1",
+          resolvedGroups: [],
           isSystemAdmin: false,
         },
       } as Partial<Request>);
@@ -187,6 +190,7 @@ describe("RequestLoggingInterceptor", () => {
       resolvedIdentity: {
         userId: "user-abc",
         actorId: "user-abc",
+        resolvedGroups: [],
         isSystemAdmin: false,
         groupRoles: {},
       },
@@ -205,6 +209,7 @@ describe("RequestLoggingInterceptor", () => {
         groupRoles: {},
         isSystemAdmin: false,
         actorId: "actor-1",
+        resolvedGroups: [],
       },
     } as Partial<Request>);
     const ctx = makeContext(req);
@@ -248,6 +253,7 @@ describe("RequestLoggingInterceptor", () => {
           groupRoles: {},
           isSystemAdmin: false,
           actorId: "actor-1",
+          resolvedGroups: [],
         },
       } as Partial<Request>);
       const ctx = makeContext(req);
@@ -331,6 +337,65 @@ describe("RequestLoggingInterceptor", () => {
         "Request completed",
         expect.objectContaining({ requestId: "rid-123" }),
       );
+    });
+  });
+
+  describe("probe paths", () => {
+    const atDebug = [
+      "/health",
+      "/health/live",
+      "/health/ready",
+      "/api/health",
+      "/api/health/ready",
+      "/metrics",
+      "/metrics/",
+      "/api/metrics",
+    ];
+
+    it.each(atDebug)("logs %s at debug, not info", (path) => {
+      const req = makeRequest({ path });
+      const ctx = makeContext(req);
+      const next: CallHandler = { handle: () => of("r") };
+      interceptor.intercept(ctx, next).subscribe();
+      expect(mockLogger.debug).toHaveBeenCalledWith(
+        "Request completed",
+        expect.objectContaining({ path, statusCode: 200 }),
+      );
+      expect(mockLogger.log).not.toHaveBeenCalled();
+    });
+
+    const atInfo = [
+      "/api/upload",
+      "/api/documents/abc",
+      "/healthcheck",
+      "/api/healthz",
+      "/metricsphere",
+      "/api/workflows/health-report",
+    ];
+
+    it.each(atInfo)("keeps %s at info", (path) => {
+      const req = makeRequest({ path });
+      const ctx = makeContext(req);
+      const next: CallHandler = { handle: () => of("r") };
+      interceptor.intercept(ctx, next).subscribe();
+      expect(mockLogger.log).toHaveBeenCalledWith(
+        "Request completed",
+        expect.objectContaining({ path }),
+      );
+      expect(mockLogger.debug).not.toHaveBeenCalled();
+    });
+
+    it("still records status and duration for a failing probe", () => {
+      const req = makeRequest({
+        path: "/health/ready",
+        res: { statusCode: 503 } as unknown as Request["res"],
+      });
+      const ctx = makeContext(req);
+      const next: CallHandler = { handle: () => of("r") };
+      interceptor.intercept(ctx, next).subscribe();
+      const call = (mockLogger.debug as jest.Mock).mock.calls[0];
+      expect(call[1]).toMatchObject({ statusCode: 503, method: "GET" });
+      expect(typeof call[1].durationMs).toBe("number");
     });
   });
 });

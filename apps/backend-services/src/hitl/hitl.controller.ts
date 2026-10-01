@@ -23,12 +23,10 @@ import {
 import { Request } from "express";
 import { AuditService } from "@/audit/audit.service";
 import { Identity } from "@/auth/identity.decorator";
-import {
-  getIdentityGroupIds,
-  identityCanAccessGroup,
-} from "@/auth/identity.helpers";
+import { identityCanAccessGroup } from "@/auth/identity.helpers";
+import { Permission } from "@/auth/role-permissions";
 import { DocumentService } from "../document/document.service";
-import { EscalateDto, SubmitCorrectionsDto } from "./dto/correction.dto";
+import { SubmitCorrectionsDto } from "./dto/correction.dto";
 import {
   AnalyticsResponseDto,
   CorrectionsListResponseDto,
@@ -43,9 +41,10 @@ import { HeartbeatResponseDto } from "./dto/lock.dto";
 import { NextSessionFilterDto } from "./dto/next-session.dto";
 import { AnalyticsFilterDto, QueueFilterDto } from "./dto/queue-filter.dto";
 import { ReviewSessionDto } from "./dto/review-session.dto";
-import { ReviewStatusFilter } from "./dto/status-constants.dto";
 import { HitlService } from "./hitl.service";
 
+// TODO: Need an endpoint specifically for reviewers so they can only access documents that are unclaimed for review or that they have already claimed for review.
+// See the document controller /view endpoint
 @ApiTags("hitl")
 @Controller("api/hitl")
 export class HitlController {
@@ -56,20 +55,20 @@ export class HitlController {
   ) {}
 
   @Get("queue")
-  @Identity({ allowApiKey: true })
+  @Identity({
+    allowApiKey: true,
+    groupPermissions: {
+      groupIdFrom: { query: "group_id" },
+      requiredPermissions: [Permission.HITL_QUEUE_RETRIEVE],
+    },
+  })
   @ApiOperation({ summary: "Get review queue with filters" })
   @ApiOkResponse({
     description: "Paginated list of documents requiring human review",
     type: QueueResponseDto,
   })
   async getQueue(@Query() filters: QueueFilterDto, @Req() req: Request) {
-    let groupIds: string[] | undefined;
-    if (filters.group_id) {
-      identityCanAccessGroup(req.resolvedIdentity, filters.group_id);
-      groupIds = [filters.group_id];
-    } else {
-      groupIds = getIdentityGroupIds(req.resolvedIdentity);
-    }
+    const groupIds = [filters.group_id];
     const result = await this.hitlService.getQueue(
       filters,
       groupIds,
@@ -93,18 +92,21 @@ export class HitlController {
   }
 
   @Get("queue/stats")
-  @Identity({ allowApiKey: true })
-  @ApiOperation({ summary: "Get queue statistics" })
-  @ApiQuery({
-    name: "reviewStatus",
-    required: false,
-    enum: ReviewStatusFilter,
-    enumName: "ReviewStatusFilter",
-    description: "Filter by review status",
+  @Identity({
+    allowApiKey: true,
+    groupPermissions: {
+      groupIdFrom: { query: "group_id" },
+      requiredPermissions: [Permission.HITL_QUEUE_RETRIEVE],
+    },
+  })
+  @ApiOperation({
+    summary: "Get queue statistics",
+    description:
+      "Counts cover the entire queue and are independent of the review-status tab in view.",
   })
   @ApiQuery({
     name: "group_id",
-    required: false,
+    required: true,
     type: String,
     description: "Scope stats to a specific group ID",
   })
@@ -114,22 +116,23 @@ export class HitlController {
     type: QueueStatsResponseDto,
   })
   async getQueueStats(
-    @Query("reviewStatus") reviewStatus?: ReviewStatusFilter,
-    @Req() req?: Request,
-    @Query("group_id") group_id?: string,
+    @Req() req: Request,
+    @Query("group_id") group_id: string,
   ) {
-    let groupIds: string[] | undefined;
-    if (group_id) {
-      identityCanAccessGroup(req?.resolvedIdentity, group_id);
-      groupIds = [group_id];
-    } else {
-      groupIds = getIdentityGroupIds(req?.resolvedIdentity);
-    }
-    return this.hitlService.getQueueStats(reviewStatus, groupIds);
+    return this.hitlService.getQueueStats(
+      [group_id],
+      req?.resolvedIdentity?.actorId,
+    );
   }
 
   @Post("sessions/next")
-  @Identity({ allowApiKey: true })
+  @Identity({
+    allowApiKey: true,
+    groupPermissions: {
+      groupIdFrom: { query: "group_id" },
+      requiredPermissions: [Permission.HITL_SESSION_RETRIEVE],
+    },
+  })
   @ApiOperation({
     summary: "Atomically pick the next eligible document and start a session",
   })
@@ -145,15 +148,10 @@ export class HitlController {
     @Query() filters: NextSessionFilterDto,
     @Req() req: Request,
   ) {
-    let groupIds: string[];
-    if (filters.group_id) {
-      identityCanAccessGroup(req.resolvedIdentity, filters.group_id);
-      groupIds = [filters.group_id];
-    } else {
-      groupIds = getIdentityGroupIds(req.resolvedIdentity) ?? [];
-    }
     const reviewerId = req.resolvedIdentity.actorId;
-    return this.hitlService.getNextSession(filters, reviewerId, groupIds);
+    return this.hitlService.getNextSession(filters, reviewerId, [
+      filters.group_id,
+    ]);
   }
 
   @Post("sessions")
@@ -170,7 +168,9 @@ export class HitlController {
     if (!document) {
       throw new NotFoundException(`Document ${dto.documentId} not found`);
     }
-    identityCanAccessGroup(req.resolvedIdentity, document.group_id);
+    identityCanAccessGroup(req.resolvedIdentity, document.group_id, [
+      Permission.HITL_SESSION_CREATE,
+    ]);
     const reviewerId = req.resolvedIdentity.actorId;
     return this.hitlService.startSession(dto, reviewerId);
   }
@@ -190,7 +190,9 @@ export class HitlController {
     if (!session) {
       throw new NotFoundException(`Review session ${id} not found`);
     }
-    identityCanAccessGroup(req.resolvedIdentity, session.document.group_id);
+    identityCanAccessGroup(req.resolvedIdentity, session.document.group_id, [
+      Permission.HITL_SESSION_RETRIEVE,
+    ]);
     const result = await this.hitlService.getSession(id);
     await this.auditService.recordEvent({
       event_type: "document_accessed",
@@ -223,7 +225,9 @@ export class HitlController {
     if (!session) {
       throw new NotFoundException(`Review session ${sessionId} not found`);
     }
-    identityCanAccessGroup(req.resolvedIdentity, session.document.group_id);
+    identityCanAccessGroup(req.resolvedIdentity, session.document.group_id, [
+      Permission.HITL_CORRECTION_SUBMIT,
+    ]);
     return this.hitlService.submitCorrections(sessionId, dto);
   }
 
@@ -242,7 +246,9 @@ export class HitlController {
     if (!session) {
       throw new NotFoundException(`Review session ${sessionId} not found`);
     }
-    identityCanAccessGroup(req.resolvedIdentity, session.document.group_id);
+    identityCanAccessGroup(req.resolvedIdentity, session.document.group_id, [
+      Permission.HITL_SESSION_RETRIEVE,
+    ]);
     const result = await this.hitlService.getCorrections(sessionId);
     await this.auditService.recordEvent({
       event_type: "document_accessed",
@@ -266,44 +272,27 @@ export class HitlController {
   })
   @ApiNotFoundResponse({ description: "Session not found" })
   @ApiForbiddenResponse({ description: "Access denied: not a group member" })
+  @ApiConflictResponse({
+    description:
+      "Session is not in progress: already approved, flagged, or abandoned",
+  })
   async approveSession(@Param("id") sessionId: string, @Req() req: Request) {
     const session = await this.hitlService.findReviewSession(sessionId);
     if (!session) {
       throw new NotFoundException(`Review session ${sessionId} not found`);
     }
-    identityCanAccessGroup(req.resolvedIdentity, session.document.group_id);
+    identityCanAccessGroup(req.resolvedIdentity, session.document.group_id, [
+      Permission.HITL_SESSION_PROGRESS,
+    ]);
     return this.hitlService.approveSession(sessionId);
-  }
-
-  @Post("sessions/:id/escalate")
-  @Identity({ allowApiKey: true })
-  @ApiOperation({ summary: "Escalate a document for expert review" })
-  @ApiParam({ name: "id", description: "Session ID" })
-  @ApiOkResponse({
-    description: "Session escalated for expert review",
-    type: SessionActionResponseDto,
-  })
-  @ApiNotFoundResponse({ description: "Session not found" })
-  @ApiForbiddenResponse({ description: "Access denied: not a group member" })
-  async escalateSession(
-    @Param("id") sessionId: string,
-    @Body() dto: EscalateDto,
-    @Req() req: Request,
-  ) {
-    const session = await this.hitlService.findReviewSession(sessionId);
-    if (!session) {
-      throw new NotFoundException(`Review session ${sessionId} not found`);
-    }
-    identityCanAccessGroup(req.resolvedIdentity, session.document.group_id);
-    return this.hitlService.escalateSession(sessionId, dto);
   }
 
   @Post("sessions/:id/skip")
   @Identity({ allowApiKey: true })
-  @ApiOperation({ summary: "Skip a review session" })
+  @ApiOperation({ summary: "Skip a review session, releasing the lock" })
   @ApiParam({ name: "id", description: "Session ID" })
   @ApiOkResponse({
-    description: "Session skipped",
+    description: "Lock released, session returned to pending queue",
     type: SessionActionResponseDto,
   })
   @ApiNotFoundResponse({ description: "Session not found" })
@@ -313,8 +302,33 @@ export class HitlController {
     if (!session) {
       throw new NotFoundException(`Review session ${sessionId} not found`);
     }
-    identityCanAccessGroup(req.resolvedIdentity, session.document.group_id);
+    identityCanAccessGroup(req.resolvedIdentity, session.document.group_id, [
+      Permission.HITL_SESSION_PROGRESS,
+    ]);
     return this.hitlService.skipSession(sessionId);
+  }
+
+  @Post("sessions/:id/flag")
+  @Identity({ allowApiKey: true })
+  @ApiOperation({
+    summary: "Flag a review session as needing priority attention",
+  })
+  @ApiParam({ name: "id", description: "Session ID" })
+  @ApiOkResponse({
+    description: "Session flagged, returned to pending queue without a lock",
+    type: SessionActionResponseDto,
+  })
+  @ApiNotFoundResponse({ description: "Session not found" })
+  @ApiForbiddenResponse({ description: "Access denied: not a group member" })
+  async flagSession(@Param("id") sessionId: string, @Req() req: Request) {
+    const session = await this.hitlService.findReviewSession(sessionId);
+    if (!session) {
+      throw new NotFoundException(`Review session ${sessionId} not found`);
+    }
+    identityCanAccessGroup(req.resolvedIdentity, session.document.group_id, [
+      Permission.HITL_SESSION_PROGRESS,
+    ]);
+    return this.hitlService.flagSession(sessionId);
   }
 
   @Post("sessions/:id/heartbeat")
@@ -333,7 +347,9 @@ export class HitlController {
     if (!session) {
       throw new NotFoundException(`Review session ${sessionId} not found`);
     }
-    identityCanAccessGroup(req.resolvedIdentity, session.document.group_id);
+    identityCanAccessGroup(req.resolvedIdentity, session.document.group_id, [
+      Permission.HITL_SESSION_PROGRESS,
+    ]);
     return this.hitlService.heartbeat(sessionId);
   }
 
@@ -354,7 +370,9 @@ export class HitlController {
     if (!session) {
       throw new NotFoundException(`Review session ${sessionId} not found`);
     }
-    identityCanAccessGroup(req.resolvedIdentity, session.document.group_id);
+    identityCanAccessGroup(req.resolvedIdentity, session.document.group_id, [
+      Permission.HITL_CORRECTION_DELETE,
+    ]);
     return this.hitlService.deleteCorrection(
       sessionId,
       correctionId,
@@ -364,7 +382,12 @@ export class HitlController {
 
   @Post("sessions/:id/reopen")
   @Identity({ allowApiKey: true })
-  @ApiOperation({ summary: "Reopen a completed review session" })
+  @ApiOperation({
+    summary:
+      "Take over a flagged review session, or relabel a ground-truth job",
+    description:
+      "A flagged session is a hand-off: any member of the group can take it over at any time, and the lock moves to them. A ground-truth labelling job reopens for its original reviewer until the dataset version is frozen. An approved document review does not reopen at all: approving it signals the gated workflow, which has already run the nodes after the gate.",
+  })
   @ApiParam({ name: "id", description: "Session ID" })
   @ApiOkResponse({
     description: "Session reopened successfully",
@@ -373,41 +396,39 @@ export class HitlController {
   @ApiNotFoundResponse({ description: "Session not found" })
   @ApiForbiddenResponse({
     description:
-      "Access denied: not a group member or not the original reviewer",
+      "Access denied: not a group member, or not the original reviewer of a session that is not flagged",
   })
   @ApiConflictResponse({
     description:
-      "Session cannot be reopened (already in progress, window expired, or dataset frozen)",
+      "Session cannot be reopened: already in progress, an approved document review, a frozen dataset version, or another reviewer holds the lock",
   })
   async reopenSession(@Param("id") sessionId: string, @Req() req: Request) {
     const session = await this.hitlService.findReviewSession(sessionId);
     if (!session) {
       throw new NotFoundException(`Review session ${sessionId} not found`);
     }
-    identityCanAccessGroup(req.resolvedIdentity, session.document.group_id);
+    identityCanAccessGroup(req.resolvedIdentity, session.document.group_id, [
+      Permission.HITL_SESSION_REOPEN,
+    ]);
     const reviewerId = req.resolvedIdentity.actorId;
     return this.hitlService.reopenSession(sessionId, reviewerId);
   }
 
   @Get("analytics")
-  @Identity({ allowApiKey: true })
+  @Identity({
+    allowApiKey: true,
+    groupPermissions: {
+      groupIdFrom: { query: "group_id" },
+      requiredPermissions: [Permission.HITL_SESSION_RETRIEVE],
+    },
+  })
   @ApiOperation({ summary: "Get HITL analytics" })
   @ApiOkResponse({
     description:
       "Review analytics including correction rates and session summaries",
     type: AnalyticsResponseDto,
   })
-  async getAnalytics(
-    @Query() filters: AnalyticsFilterDto,
-    @Req() req: Request,
-  ) {
-    let groupIds: string[] | undefined;
-    if (filters.group_id) {
-      identityCanAccessGroup(req.resolvedIdentity, filters.group_id);
-      groupIds = [filters.group_id];
-    } else {
-      groupIds = getIdentityGroupIds(req.resolvedIdentity);
-    }
-    return this.hitlService.getAnalytics(filters, groupIds);
+  async getAnalytics(@Query() filters: AnalyticsFilterDto) {
+    return this.hitlService.getAnalytics(filters, [filters.group_id]);
   }
 }

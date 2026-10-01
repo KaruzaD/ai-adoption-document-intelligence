@@ -21,19 +21,18 @@ All QA workflows also support `workflow_dispatch`. Local equivalents run as left
 | Checkov | `checkov.yml` | IaC misconfiguration (Kubernetes/OpenShift manifests, Dockerfiles) |
 | Hadolint | `hadolint.yml` | Dockerfile linting (PRs only) |
 | Dependency Review | `dependency-review.yml` | New dependency vulnerabilities/licenses (PRs only) |
-| Python Dependency Audit | `python-dependency-audit.yml` | `apps/image-service` Python dependencies |
 
 ## Deploy and publish
 
 | Workflow | File | Trigger | What it does |
 | --- | --- | --- | --- |
-| Deploy Instance | `deploy-instance.yml` | Push to `develop`/`main`, or manual dispatch from any branch | Builds images and deploys to OpenShift — see [AUTO_DEPLOY.md](AUTO_DEPLOY.md) |
+| Deploy Instance | `deploy-instance.yml` | Push to `develop`, or manual dispatch from any branch (`prod` only from `main`) | Builds images and deploys to OpenShift: `develop` pushes to the test instance, a manual `prod` run from `main` to production — see [AUTO_DEPLOY.md](AUTO_DEPLOY.md) |
 | Deploy GitHub Pages | `pages.yml` | Push to `main` touching `docs/**`, `docs-md/wiki/**`, the wiki builder, or `package.json` | Runs `docs/build.sh` (pages, wiki HTML, Mermaid diagrams) and publishes the `docs/` site |
 
 ## Manual operations (`workflow_dispatch` only)
 
 | Workflow | File | What it does |
 | --- | --- | --- |
-| Database Backup | `db-backup-manual.yml` | One-off backup of a named Crunchy PostgreSQL cluster (see also `scripts/oc-backup-db.sh` and [BACKUP_TO_NETWORK_SHARE.md](BACKUP_TO_NETWORK_SHARE.md)) |
-| Database Restore | `db-restore.yml` | Restore a named cluster from a backup |
+| pgBackRest List Backups | `pgbackrest-list-backups.yml` | Prints the backup labels available for a cluster. Read-only, and the way to find the label the restore workflow needs |
+| pgBackRest Database Restore | `pgbackrest-restore.yml` | Restores a cluster from an automated pgBackRest backup, scaling the application down and back up around it — see [PGBACKREST_RESTORE.md](PGBACKREST_RESTORE.md) |
 | Release | `release.yml` | Creates a release pull request via `changesets/action` |

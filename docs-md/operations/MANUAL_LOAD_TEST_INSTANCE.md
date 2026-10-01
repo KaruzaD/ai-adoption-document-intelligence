@@ -18,7 +18,7 @@ Prerequisites:
 ## 1. Choose instance name and image tag
 
 - Instance name: lowercase, hyphenated, **≤ 20 characters** (see [`scripts/lib/instance-name.sh`](../../scripts/lib/instance-name.sh)).
-- Image tag: any Docker-safe tag; default for **`oc-build-push.sh`** is the sanitized **git branch name** (same rules as GitHub `workflow_dispatch`).
+- Image tag: any Docker-safe tag; default for **`oc-build-push.sh`** is the sanitized **git branch name** (same rules as GitHub `workflow_dispatch`). That tag is the **floating** tag — the build pushes to the **staged** tag **`<tag>-<sha12>`**, and that staged tag is what you deploy (see [AUTO_DEPLOY.md § Staging model](./AUTO_DEPLOY.md#staging-model)).
 
 Pick an explicit instance name if the branch-derived name would collide with **`bcgov-di-test`**:
 
@@ -42,6 +42,8 @@ Examples:
 
 Frontend builds pick up `VITE_*` variables from `dev.env`, consistent with CI.
 
+The script pushes to **`<your-tag>-<sha12>`** and prints that staged tag as `Push tag:` — copy it, it is what step 3 deploys. Pass **`--push-floating`** if you deliberately want the old behaviour of overwriting `<your-tag>` itself.
+
 ## 3. Deploy the stack into `fd34fb-test`
 
 Log in with the test-namespace SA token (writes **`./scripts/oc-login-sa.sh`** target):
@@ -51,14 +53,16 @@ Log in with the test-namespace SA token (writes **`./scripts/oc-login-sa.sh`** t
 ./scripts/oc-deploy-instance.sh \
   --env dev \
   --namespace fd34fb-test \
-  --image-tag <your-tag> \
+  --image-tag <your-tag>-<sha12> \
   --instance <optional-short-name> \
   --document-intelligence-mode mock \
   --mock-azure-ocr true \
   --confirm
 ```
 
-Flags **`--confirm`** are mandatory (guards accidental applies).
+Flags **`--confirm`** are mandatory (guards accidental applies). The deploy exits non-zero if any rollout fails to complete, dumping pod status, `FailedScheduling` events and the namespace quotas.
+
+Promotion (**`./scripts/oc-build-push.sh --env dev --tag <your-tag> --promote`**) is optional for a disposable instance — it only repoints the floating **`<your-tag>`** at the manifest you just deployed, and nothing in this flow pulls that tag.
 
 URLs:
 
@@ -75,13 +79,7 @@ For OCR-heavy scenarios use **`DOCUMENT_INTELLIGENCE_MODE=mock`** on the backend
 --document-intelligence-mode mock --mock-azure-ocr true
 ```
 
-Reduce Postgres backup PVC pressure if quotas bite:
-
-```text
-PG_BACKUP_STORAGE_SIZE=2Gi
-```
-
-in `<instance>.env` merge file.
+Backup PVC sizes are fixed at the base manifest values (`10Gi` each for `app-pg` and `temporal-pg`) and are no longer tunable per instance. If the namespace storage quota bites, tear down idle instances or raise the quota with the Platform Services team — editing the base manifests changes every test instance, not just this one.
 
 ### Mock blob storage with in-cluster MinIO
 
@@ -91,7 +89,7 @@ Add **`--blob-storage-provider minio`** to deploy a per-instance MinIO stack ins
 ./scripts/oc-deploy-instance.sh \
   --env dev \
   --namespace fd34fb-test \
-  --image-tag <your-tag> \
+  --image-tag <your-tag>-<sha12> \
   --instance <name> \
   --document-intelligence-mode mock \
   --mock-azure-ocr true \
@@ -168,7 +166,7 @@ oc -n <namespace> patch pvc <instance>-minio --type=merge \
 oc -n <namespace> exec deployment/<instance>-minio -- df -h /data
 ```
 
-Be aware the namespace **`storage-quota`** caps total PVC requests across the namespace (e.g. **64 Gi** in **`fd34fb-dev`**, with shared PLG and PG-backup PVCs already consuming roughly **40 Gi**). Check **`oc get resourcequota storage-quota`** before patching; the expand will be rejected with **`exceeded quota`** if not enough headroom is free. Recommended default for sustained load testing is **`5–10 Gi`** per instance — a real fix in source would be a sibling **`tools/load-testing/cleanup-blobs.sh`** that prunes the load-test prefixes for a group, freeing actual disk space without changing the PVC request.
+Be aware the namespace **`storage-quota`** caps total PVC requests across the namespace (e.g. **64 Gi** in **`fd34fb-dev`**, with shared PLG and PG-backup PVCs already consuming roughly **40 Gi**). Check **`oc get resourcequota storage-quota`** before patching; the expand will be rejected with **`exceeded quota`** if not enough headroom is free. The CI/local deploy scripts (`scripts/lib/wait-for-rollouts.sh`) fail with diagnostics (pod status, `FailedScheduling` events, and resource-quota details) when a rollout times out because pods stay Pending — so an exhausted namespace surfaces as a failed deploy rather than a silent success. Recommended default for sustained load testing is **`5–10 Gi`** per instance — a real fix in source would be a sibling **`tools/load-testing/cleanup-blobs.sh`** that prunes the load-test prefixes for a group, freeing actual disk space without changing the PVC request.
 5. **HITL read throughput is flat from 1 → 10 VUs and indicates a tiny backend DB pool.** Running `review-hitl` with `LOAD_TEST_HITL_SESSION_MODE=off` (the four read endpoints only — **`GET /api/hitl/queue`**, **`GET /api/hitl/queue/stats`**, **`GET /api/hitl/analytics`**, **`GET /api/benchmark/datasets/from-hitl/eligible-documents`**) against **1,000 seeded HITL-eligible documents** showed:
 
    | VUs | req_total | req/s | p50 | p95 | fail |
@@ -246,7 +244,7 @@ This deletes labeled resources including PostgresClusters for that instance.
 
 ## Operational notes
 
-- **`Deploy Instance`** on **`workflow_dispatch`** still targets the **`dev`** GitHub environment / **`fd34fb-dev`**; this manual path is how you land an extra stack in **`fd34fb-test`** without changing CI.
+- **`Deploy Instance`** on **`workflow_dispatch`** deploys into the GitHub environment picked in its form: **`dev`** (the default, **`fd34fb-dev`**) or **`test`** (**`fd34fb-test`**); **`prod`** is accepted only from **`main`**, as the production instance **`bcgov-di`** (see [AUTO_DEPLOY.md](./AUTO_DEPLOY.md)). The scripts on this page build and deploy from your machine, with options the workflow does not expose: per-instance `.env` overrides and the flags below.
 - Registry paths remain **`${ARTIFACTORY_URL}/kfd3-fd34fb-local/<service>:<tag>`**, identical to CI.
 - Overlay placeholders **`DOCUMENT_INTELLIGENCE_MODE`** and **`MOCK_AZURE_OCR`** are substituted by [`scripts/lib/generate-overlay.sh`](../../scripts/lib/generate-overlay.sh); CI defaults stay **`live`** / **`false`** when those flags are omitted.
-- The **`minio`** Kustomize component lives at [`deployments/openshift/kustomize/components/minio`](../../deployments/openshift/kustomize/components/minio) and is opt-in. CI’s **`Deploy Instance`** workflow does **not** pass **`--blob-storage-provider minio`**, so it has no effect on the **`bcgov-di-test`** or **`bcgov-di-prod`** stacks.
+- The **`minio`** Kustomize component lives at [`deployments/openshift/kustomize/components/minio`](../../deployments/openshift/kustomize/components/minio) and is opt-in. CI’s **`Deploy Instance`** workflow does **not** pass **`--blob-storage-provider minio`**, so it has no effect on the **`bcgov-di-test`** or **`bcgov-di`** (production) stacks.
