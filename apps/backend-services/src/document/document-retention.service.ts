@@ -26,8 +26,14 @@ export const REVIEW_SESSION_RETENTION_ENV_VAR = "REVIEW_SESSION_RETENTION_DAYS";
 
 /** Max documents deleted per run — blob I/O makes per-doc cost non-trivial. */
 const DOCUMENT_BATCH_SIZE = 500;
-/** Max rows deleted per run for pure-DB jobs (no blob I/O). */
+/** Max rows deleted per batch for pure-DB jobs (no blob I/O). */
 const SIMPLE_BATCH_SIZE = 2000;
+/**
+ * Wall-clock budget for one run of a pure-DB job. The job keeps deleting
+ * batches until one deletes nothing or this budget is spent, so a large
+ * backlog drains over several nights instead of in one WAL-heavy burst.
+ */
+const SIMPLE_JOB_TIME_BUDGET_MS = 5 * 60 * 1000;
 
 /**
  * Terminal document statuses eligible for retention-based deletion.
@@ -52,6 +58,7 @@ const DELETABLE_STATUSES: DocumentStatus[] = [
  * Jobs run in two groups to spread DB pressure:
  *   Every 6 hours (00:00/06:00/12:00/18:00) — documents + blobs
  *   Daily at 02:15/02:30/02:45 — audit_events, benchmark_audit_logs, review_sessions
+ *     (each repeats 2,000-row batches until drained or 5 minutes have passed)
  */
 @Injectable()
 export class DocumentRetentionService {
@@ -174,8 +181,10 @@ export class DocumentRetentionService {
   /**
    * Runs daily at 02:45: deletes completed `review_sessions` (and their
    * cascading `field_corrections`) older than `REVIEW_SESSION_RETENTION_DAYS`.
-   * Only terminal-status sessions (approved / flagged / abandoned) are
-   * eligible. Skipped when the variable is unset.
+   * Only `approved` and `abandoned` sessions whose document has finished
+   * processing (`complete`, `failed`, `conversion_failed`) are eligible;
+   * `flagged` sessions still need action and are kept. Skipped when the
+   * variable is unset.
    */
   @Cron("45 2 * * *")
   async deleteExpiredReviewSessions(): Promise<void> {
@@ -193,8 +202,13 @@ export class DocumentRetentionService {
   /**
    * Shared runner for simple (DB-only, batch-delete) retention jobs.
    * Reads and validates the retention window from `envVar`, computes a cutoff,
-   * calls `deleteFn`, and logs the result. Errors from `deleteFn` are caught
-   * and logged without re-throwing so one failing job does not block others.
+   * then calls `deleteFn` repeatedly until a batch deletes nothing or the
+   * run's time budget is spent, and logs the total. It stops on zero rather
+   * than on a short batch because every replica runs this job at once: two
+   * pods can split one batch between them, and a short count then does not
+   * mean the backlog is empty. Errors from `deleteFn` are caught and logged with
+   * the count deleted so far, without re-throwing, so one failing job does not
+   * block others.
    *
    * @param envVar - Name of the env var holding the retention window in days.
    * @param label - Human-readable data-class label used in log messages.
@@ -220,20 +234,31 @@ export class DocumentRetentionService {
       Date.now() - retentionDays * 24 * 60 * 60 * 1000,
     );
 
-    let deleted: number;
-    try {
-      deleted = await deleteFn(olderThan, SIMPLE_BATCH_SIZE);
-    } catch (err) {
-      this.logger.error(`Failed to delete expired ${label} records`, {
-        stack: getErrorStack(err),
-      });
-      return;
-    }
+    const deadline = Date.now() + SIMPLE_JOB_TIME_BUDGET_MS;
+    let deleted = 0;
+    let batches = 0;
+    let batchCount: number;
+    do {
+      try {
+        batchCount = await deleteFn(olderThan, SIMPLE_BATCH_SIZE);
+      } catch (err) {
+        this.logger.error(`Failed to delete expired ${label} records`, {
+          deletedBeforeError: deleted,
+          batches,
+          stack: getErrorStack(err),
+        });
+        return;
+      }
+      deleted += batchCount;
+      batches++;
+    } while (batchCount > 0 && Date.now() < deadline);
 
     if (deleted > 0) {
       this.logger.log(`${label} retention cleanup run complete`, {
         olderThanDays: retentionDays,
         deleted,
+        batches,
+        timeBudgetReached: batchCount > 0,
       });
     }
   }

@@ -318,7 +318,9 @@ function describeSimpleRetentionJob(params: {
     });
 
     it("logs the deleted count when rows were removed", async () => {
-      mockRetentionDb[params.dbMethodName].mockResolvedValue(42);
+      mockRetentionDb[params.dbMethodName]
+        .mockResolvedValueOnce(42)
+        .mockResolvedValueOnce(0);
 
       await params.getService()[params.methodName]();
 
@@ -348,6 +350,97 @@ function describeSimpleRetentionJob(params: {
         expect.stringContaining(params.logLabel),
         expect.objectContaining({ stack: expect.anything() }),
       );
+    });
+
+    it("keeps deleting until a batch deletes nothing", async () => {
+      mockRetentionDb[params.dbMethodName]
+        .mockResolvedValueOnce(2000)
+        .mockResolvedValueOnce(2000)
+        .mockResolvedValueOnce(150)
+        .mockResolvedValueOnce(0);
+
+      await params.getService()[params.methodName]();
+
+      expect(mockRetentionDb[params.dbMethodName]).toHaveBeenCalledTimes(4);
+      expect(mockLogger.log).toHaveBeenCalledWith(
+        expect.stringContaining(params.logLabel),
+        expect.objectContaining({
+          deleted: 4150,
+          batches: 4,
+          timeBudgetReached: false,
+        }),
+      );
+    });
+
+    it("does not stop on a short batch, since another replica may have taken part of it", async () => {
+      mockRetentionDb[params.dbMethodName]
+        .mockResolvedValueOnce(1400)
+        .mockResolvedValueOnce(2000)
+        .mockResolvedValueOnce(0);
+
+      await params.getService()[params.methodName]();
+
+      expect(mockRetentionDb[params.dbMethodName]).toHaveBeenCalledTimes(3);
+      expect(mockLogger.log).toHaveBeenCalledWith(
+        expect.stringContaining(params.logLabel),
+        expect.objectContaining({ deleted: 3400, batches: 3 }),
+      );
+    });
+
+    it("reuses the same cutoff for every batch in a run", async () => {
+      mockRetentionDb[params.dbMethodName]
+        .mockResolvedValueOnce(2000)
+        .mockResolvedValueOnce(0);
+
+      await params.getService()[params.methodName]();
+
+      const calls = mockRetentionDb[params.dbMethodName].mock.calls as [
+        Date,
+        number,
+      ][];
+      expect(calls).toHaveLength(2);
+      expect(calls[1][0].getTime()).toBe(calls[0][0].getTime());
+    });
+
+    it("stops after the 5-minute time budget even when batches are still full", async () => {
+      let now = 1_000_000_000_000;
+      const nowSpy = jest.spyOn(Date, "now").mockImplementation(() => now);
+      mockRetentionDb[params.dbMethodName].mockImplementation(async () => {
+        now += 60 * 1000;
+        return 2000;
+      });
+
+      try {
+        await params.getService()[params.methodName]();
+      } finally {
+        nowSpy.mockRestore();
+      }
+
+      expect(mockRetentionDb[params.dbMethodName]).toHaveBeenCalledTimes(5);
+      expect(mockLogger.log).toHaveBeenCalledWith(
+        expect.stringContaining(params.logLabel),
+        expect.objectContaining({
+          deleted: 10000,
+          batches: 5,
+          timeBudgetReached: true,
+        }),
+      );
+    });
+
+    it("logs the count deleted before an error partway through a run", async () => {
+      mockRetentionDb[params.dbMethodName]
+        .mockResolvedValueOnce(2000)
+        .mockRejectedValueOnce(new Error("db offline"));
+
+      await expect(
+        params.getService()[params.methodName](),
+      ).resolves.toBeUndefined();
+
+      expect(mockLogger.error).toHaveBeenCalledWith(
+        expect.stringContaining(params.logLabel),
+        expect.objectContaining({ deletedBeforeError: 2000, batches: 1 }),
+      );
+      expect(mockLogger.log).not.toHaveBeenCalled();
     });
   });
 }
