@@ -2,6 +2,7 @@ import { DocumentStatus, PrismaClient, ReviewStatus } from "@generated/client";
 import { Injectable } from "@nestjs/common";
 import { PrismaService } from "@/database/prisma.service";
 
+// TODO: add ReviewStatus.rejected once it exists in the schema.
 /**
  * Review statuses whose sessions are eligible for age-based deletion.
  * `flagged` is excluded: it marks an escalation that still needs action.
