@@ -406,7 +406,9 @@ function describeSimpleRetentionJob(params: {
     });
 
     it("records its run audit event in the lock transaction", async () => {
-      mockRetentionDb[params.dbMethodName].mockResolvedValue(3);
+      mockRetentionDb[params.dbMethodName]
+        .mockResolvedValueOnce(3)
+        .mockResolvedValueOnce(0);
 
       await params.getService()[params.methodName]();
 
@@ -477,7 +479,23 @@ function describeSimpleRetentionJob(params: {
       );
     });
 
-    it("does not stop on a short batch, since another replica may have taken part of it", async () => {
+    it("runs every batch in the lock transaction", async () => {
+      mockRetentionDb[params.dbMethodName]
+        .mockResolvedValueOnce(2000)
+        .mockResolvedValueOnce(0);
+
+      await params.getService()[params.methodName]();
+
+      const calls = mockRetentionDb[params.dbMethodName].mock.calls as [
+        Date,
+        number,
+        unknown,
+      ][];
+      expect(calls).toHaveLength(2);
+      expect(calls.map((c) => c[2])).toEqual([LOCK_TX, LOCK_TX]);
+    });
+
+    it("does not stop on a short batch; only an empty batch ends the run", async () => {
       mockRetentionDb[params.dbMethodName]
         .mockResolvedValueOnce(1400)
         .mockResolvedValueOnce(2000)

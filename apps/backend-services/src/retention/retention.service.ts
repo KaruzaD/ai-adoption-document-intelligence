@@ -289,12 +289,15 @@ export class DocumentRetentionService {
    * Shared runner for simple (DB-only, batch-delete) retention jobs.
    * Reads and validates the retention window from `envVar`, computes a cutoff,
    * then calls `deleteFn` repeatedly until a batch deletes nothing or the
-   * run's time budget is spent, and logs the total. It stops on zero rather
-   * than on a short batch because every replica runs this job at once: two
-   * pods can split one batch between them, and a short count then does not
-   * mean the backlog is empty. Errors from `deleteFn` are caught and logged with
-   * the count deleted so far, without re-throwing, so one failing job does not
-   * block others.
+   * run's time budget is spent, and logs the total. The 5-minute budget sits
+   * well inside the 15-minute lock transaction that `runWithDatabaseLock`
+   * opens around the job.
+   *
+   * Every batch runs in that lock transaction (`tx`), so a run's deletes commit
+   * together when the job returns. Errors from `deleteFn` are caught and logged
+   * without re-throwing, so one failing job does not block others; the failed
+   * query aborts the transaction, so the batches before it roll back too and
+   * `deletedBeforeError` reports rows that were not kept.
    *
    * @param envVar - Name of the env var holding the retention window in days.
    * @param label - Human-readable data-class label used in log messages.
