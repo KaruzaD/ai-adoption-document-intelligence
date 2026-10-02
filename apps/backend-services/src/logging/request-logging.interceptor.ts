@@ -37,7 +37,7 @@ declare global {
 
 @Injectable()
 export class RequestLoggingInterceptor implements NestInterceptor {
-  constructor(private readonly logger: AppLoggerService) { }
+  constructor(private readonly logger: AppLoggerService) {}
 
   intercept(context: ExecutionContext, next: CallHandler) {
     const request = context.switchToHttp().getRequest<Request>();
